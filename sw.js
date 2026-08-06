@@ -1,6 +1,6 @@
-const CACHE_NAME = 'zs-bazaar-cache-v3';
+// Nama cache dibuat permanen, tidak perlu ganti-ganti versi lagi
+const CACHE_NAME = 'zs-bazaar-ota-cache';
 
-// Daftar file yang wajib disimpan ke memori HP agar bisa dibuka offline
 const ASSETS_TO_CACHE = [
     './index.html',
     './manifest.json',
@@ -9,50 +9,48 @@ const ASSETS_TO_CACHE = [
     'https://unpkg.com/html5-qrcode'
 ];
 
-// PROSES INSTALL: Menyimpan file ke Cache
+// PROSES INSTALL: Memaksa Service Worker baru untuk langsung bekerja tanpa menunggu
 self.addEventListener('install', (event) => {
+    self.skipWaiting();
     event.waitUntil(
         caches.open(CACHE_NAME).then((cache) => {
-            console.log('Service Worker: Menyimpan file ke cache...');
             return cache.addAll(ASSETS_TO_CACHE);
         })
     );
-    self.skipWaiting();
 });
 
-// PROSES AKTIVASI: Membersihkan Cache versi lama jika ada pembaruan
+// PROSES AKTIVASI: Mengambil alih kontrol semua halaman yang terbuka
 self.addEventListener('activate', (event) => {
-    event.waitUntil(
-        caches.keys().then((cacheNames) => {
-            return Promise.all(
-                cacheNames.map((cache) => {
-                    if (cache !== CACHE_NAME) {
-                        console.log('Service Worker: Menghapus cache lama...');
-                        return caches.delete(cache);
-                    }
-                })
-            );
-        })
-    );
     self.clients.claim();
 });
 
-// PROSES FETCH: Memotong antrean request saat aplikasi dibuka
+// PROSES FETCH (STRATEGI OTA: Network First, Fallback to Cache)
 self.addEventListener('fetch', (event) => {
-    // PENTING: Jangan cache request ke database Firebase. Biarkan Firebase SDK mengurus offline-nya sendiri.
+    // Abaikan sinkronisasi database Firebase (biarkan Firebase SDK yang mengurus)
     if (event.request.url.includes('firestore.googleapis.com') || event.request.url.includes('firebase')) {
         return;
     }
 
     event.respondWith(
-        caches.match(event.request).then((cachedResponse) => {
-            // Jika file ada di cache, gunakan itu (bisa offline). Jika tidak, ambil dari internet.
-            return cachedResponse || fetch(event.request);
+        fetch(event.request).then((networkResponse) => {
+            // JIKA ONLINE: Berhasil dapat data baru dari internet (GitHub)
+            // Simpan salinan data baru ini ke dalam memori Cache secara diam-diam
+            return caches.open(CACHE_NAME).then((cache) => {
+                cache.put(event.request, networkResponse.clone());
+                return networkResponse; // Tampilkan yang terbaru ke layar
+            });
         }).catch(() => {
-            // Jika internet mati dan file tidak ada di cache, arahkan kembali ke halaman utama
-            if (event.request.mode === 'navigate') {
-                return caches.match('./Bazaar_Fixed.html');
-            }
+            // JIKA OFFLINE: Gagal terhubung ke internet
+            // Ambil dari memori Cache
+            return caches.match(event.request).then((cachedResponse) => {
+                if (cachedResponse) {
+                    return cachedResponse;
+                }
+                // Jika offline dan tidak ada di cache sama sekali, paksakan ke halaman awal
+                if (event.request.mode === 'navigate') {
+                    return caches.match('./index.html');
+                }
+            });
         })
     );
 });
