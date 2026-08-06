@@ -467,13 +467,15 @@
             master_inventory_date: localStorage.getItem('master_inventory_date') || ''
         };
 
-        const DB = {
-            get: function(colName) { return window.appState[colName] || []; },
-            set: async function(colName, itemsArray) {
-                if (!window.db) return;
-                try { await window.setDoc(window.doc(window.db, "appData", colName), { items: itemsArray }); } catch(e) { console.error("Firebase Set Error:", e); }
-            }
-        };
+       const DB = {
+    get: function(colName) { return window.appState[colName] || []; },
+    set: function(colName, itemsArray) {
+        if (!window.db) return;
+        // Jalankan penyimpanan di background tanpa memblokir UI (Tanpa 'await')
+        window.setDoc(window.doc(window.db, "appData", colName), { items: itemsArray })
+            .catch(e => console.error("Firebase Sync Error:", e));
+    }
+};
 
         window.addEventListener('firebase-ready', () => {
             const collections = ['users', 'master_inventory', 'bazaar_items', 'bazaars_list'];
