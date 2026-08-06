@@ -1,4 +1,5 @@
-const CACHE_NAME = 'zs-bazaar-ota-cache';
+// Ganti nama cache agar tidak bentrok dengan yang lama
+const CACHE_NAME = 'zs-bazaar-ota-final';
 
 const ASSETS_TO_CACHE = [
     './index.html',
@@ -18,6 +19,18 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('activate', (event) => {
+    // PERINTAH SAPU BERSIH: Menghapus semua cache lama yang menyangkut di HP
+    event.waitUntil(
+        caches.keys().then((cacheNames) => {
+            return Promise.all(
+                cacheNames.map((cache) => {
+                    if (cache !== CACHE_NAME) {
+                        return caches.delete(cache);
+                    }
+                })
+            );
+        })
+    );
     self.clients.claim();
 });
 
