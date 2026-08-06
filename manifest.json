@@ -2,7 +2,7 @@
   "name": "Dashbord Sales Zaskia Sungkar & Shi By Shireen",
   "short_name": "ZS & Shi Hub",
   "description": "Sistem Inventory & Penjualan Bazaar Offline-First",
-  "start_url": "./Bazaar_Fixed.html",
+  "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#f1f5f9",
   "theme_color": "#1e1b4b",
