@@ -467,15 +467,15 @@
             master_inventory_date: localStorage.getItem('master_inventory_date') || ''
         };
 
-       const DB = {
-    get: function(colName) { return window.appState[colName] || []; },
-    set: function(colName, itemsArray) {
-        if (!window.db) return;
-        // Jalankan penyimpanan di background tanpa memblokir UI (Tanpa 'await')
-        window.setDoc(window.doc(window.db, "appData", colName), { items: itemsArray })
-            .catch(e => console.error("Firebase Sync Error:", e));
-    }
-};
+        const DB = {
+            get: function(colName) { return window.appState[colName] || []; },
+            set: function(colName, itemsArray) {
+                if (!window.db) return;
+                // Jalankan penyimpanan di background tanpa memblokir UI (Tanpa 'await')
+                window.setDoc(window.doc(window.db, "appData", colName), { items: itemsArray })
+                    .catch(e => console.error("Firebase Sync Error:", e));
+            }
+        };
 
         window.addEventListener('firebase-ready', () => {
             const collections = ['users', 'master_inventory', 'bazaar_items', 'bazaars_list'];
@@ -486,11 +486,24 @@
                     refreshUI(); 
                 });
             });
-            setTimeout(() => { document.getElementById('dbLoading').classList.add('hidden'); if(!currentUser) showLogin(); }, 1000);
+            setTimeout(() => { 
+                document.getElementById('dbLoading').classList.add('hidden'); 
+                // CEK SESSION STORAGE: Jika sudah login, kembalikan ke dashboard tanpa perlu login ulang
+                let savedUser = sessionStorage.getItem('loggedInUser');
+                if(savedUser) {
+                    currentUser = JSON.parse(savedUser);
+                    showDashboard();
+                } else {
+                    showLogin();
+                }
+            }, 1000);
         });
 
         if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => { navigator.serviceWorker.register('./sw.js').catch(e => console.log(e)); });
+            window.addEventListener('load', () => { 
+                // TAMBAHAN CACHE BUSTER: Parameter ?v=update1 memaksa HP mengabaikan cache browser!
+                navigator.serviceWorker.register('./sw.js?v=update1').catch(e => console.log(e)); 
+            });
         }
 
         // ==========================================
@@ -584,7 +597,7 @@
             let rowEl = document.getElementById(rowId);
             if(rowEl) { rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); rowEl.classList.add('scanned-highlight'); setTimeout(() => rowEl.classList.remove('scanned-highlight'), 2000); }
 
-            if (actionType === 'kemas') openPackingModal(targetItem.id); // Perubahan arah ke modal packing
+            if (actionType === 'kemas') openPackingModal(targetItem.id); 
             else if (actionType === 'jual') {
                 let st = targetItem.status_pengiriman || "Menunggu Gudang";
                 if(st === 'Dikemas') terimaBarangSales(targetItem.id); else catatPenjualan(targetItem.id);
@@ -600,7 +613,12 @@
         async function login() {
             let user = document.getElementById('loginUser').value.trim(); let pass = document.getElementById('loginPass').value; let users = DB.get('users');
             let validUser = users.find(u => u.username.toLowerCase() === user.toLowerCase() && u.password === pass);
-            if(validUser) { currentUser = validUser; showDashboard(); document.getElementById('loginUser').value = ''; document.getElementById('loginPass').value = ''; } else { await UI.alert("Gagal", "Username/Password salah.", "error"); }
+            if(validUser) { 
+                currentUser = validUser; 
+                sessionStorage.setItem('loggedInUser', JSON.stringify(validUser)); // PENYIMPANAN SESI LOGIN DITAMBAHKAN
+                showDashboard(); 
+                document.getElementById('loginUser').value = ''; document.getElementById('loginPass').value = ''; 
+            } else { await UI.alert("Gagal", "Username/Password salah.", "error"); }
         }
         async function register() {
             let user = document.getElementById('regUser').value.trim(); let pass = document.getElementById('regPass').value; let dept = document.getElementById('regDept').value;
@@ -615,7 +633,16 @@
             let newPass = await UI.prompt("Reset Password", `Masukkan password BARU:`); if (!newPass) return;
             users[uIdx].password = newPass; await DB.set('users', users); await UI.alert("Sukses", "Password diperbarui.", "success");
         }
-        async function logout() { let conf = await UI.confirm("Keluar?", "Yakin keluar?", "question"); if(conf) { currentUser = null; activeBazaarName = ""; sessionStorage.removeItem('activeBazaarName'); showLogin(); } }
+        async function logout() { 
+            let conf = await UI.confirm("Keluar?", "Yakin keluar?", "question"); 
+            if(conf) { 
+                currentUser = null; 
+                sessionStorage.removeItem('loggedInUser'); // PENGHAPUSAN SESI LOGIN
+                activeBazaarName = ""; 
+                sessionStorage.removeItem('activeBazaarName'); 
+                showLogin(); 
+            } 
+        }
 
         function refreshUI() {
             if(!currentUser) return;
