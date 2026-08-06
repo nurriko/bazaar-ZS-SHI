@@ -1,4 +1,4 @@
-const CACHE_NAME = 'zs-bazaar-cache-v2';
+const CACHE_NAME = 'zs-bazaar-cache-v3';
 
 // Daftar file yang wajib disimpan ke memori HP agar bisa dibuka offline
 const ASSETS_TO_CACHE = [
