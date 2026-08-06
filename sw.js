@@ -2,7 +2,7 @@ const CACHE_NAME = 'zs-bazaar-cache-v1';
 
 // Daftar file yang wajib disimpan ke memori HP agar bisa dibuka offline
 const ASSETS_TO_CACHE = [
-    './Bazaar_Fixed.html',
+    './index.html',
     './manifest.json',
     './icon-512.png',
     'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap',
