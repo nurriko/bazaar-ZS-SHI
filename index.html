@@ -369,7 +369,6 @@
                                     <div id="variantCheckboxes"></div>
                                 </div>
                             </div>
-                            <!-- TAMBAHAN: Kolom Keterangan Manual -->
                             <div class="form-group hidden" id="keteranganContainer">
                                 <label>3. Keterangan (Opsional)</label>
                                 <input type="text" id="itemKeterangan" placeholder="Contoh: Refill Day 1">
@@ -407,7 +406,6 @@
                         <button class="btn-info" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="openScanner('kemas')">📷 Scan Kemas Cepat</button>
                     </div>
                     
-                    <!-- PERUBAHAN: Filter Dropdown Select -->
                     <div class="filter-container">
                         <span style="font-weight: 600; font-size: 0.85rem;">🔍 Filter:</span>
                         <select id="filterGudangBrand" class="filter-select" onchange="renderTablesBazaar()"></select>
@@ -430,7 +428,6 @@
                         </div>
                     </div>
 
-                    <!-- PERUBAHAN: Filter Dropdown Select -->
                     <div class="filter-container">
                         <span style="font-weight: 600; font-size: 0.85rem;">🔍 Filter:</span>
                         <select id="filterSalesBrand" class="filter-select" onchange="renderTablesBazaar()"></select>
@@ -575,14 +572,31 @@
         };
 
         // ==========================================
-        // SCANNER LOGIC 
+        // SCANNER LOGIC (DIPERBARUI UNTUK BARCODE 1D)
         // ==========================================
         let html5QrcodeScanner;
         function openScanner(actionType) {
             document.getElementById('scannerModal').classList.add('active');
-            html5QrcodeScanner = new Html5QrcodeScanner("qr-reader", { fps: 10, qrbox: { width: 250, height: 250 } }, false);
-            html5QrcodeScanner.render((decodedText) => { closeScanner(); handleScanResult(decodedText, actionType); }, (error) => {});
+            
+            // Mengubah qrbox menjadi persegi panjang agar pas dengan Barcode 1D
+            html5QrcodeScanner = new Html5QrcodeScanner(
+                "qr-reader", 
+                { 
+                    fps: 10, 
+                    qrbox: { width: 300, height: 150 }, // Bentuk persegi panjang
+                    rememberLastUsedCamera: true
+                }, 
+                false
+            );
+            
+            html5QrcodeScanner.render((decodedText) => { 
+                closeScanner(); 
+                handleScanResult(decodedText, actionType); 
+            }, (error) => {
+                // Mengabaikan error proses pemindaian berjalan agar tidak spam di console
+            });
         }
+        
         function closeScanner() {
             document.getElementById('scannerModal').classList.remove('active');
             if (html5QrcodeScanner) html5QrcodeScanner.clear().catch(e => console.error(e));
@@ -590,7 +604,7 @@
         async function handleScanResult(scannedCode, actionType) {
             let items = DB.get('bazaar_items');
             let targetIndex = items.findIndex(i => i.code.toLowerCase() === scannedCode.trim().toLowerCase() && (activeBazaarName ? i.bazaar_name === activeBazaarName : true) && i.status === 'active');
-            if (targetIndex === -1) return UI.alert("Tidak Ditemukan", `Kode produk "${scannedCode}" tidak ditemukan.`, "error");
+            if (targetIndex === -1) return UI.alert("Tidak Ditemukan", `Kode produk "${scannedCode}" tidak ditemukan di database.`, "error");
 
             let targetItem = items[targetIndex];
             let rowId = actionType === 'kemas' ? `row_sk_${targetItem.id}` : `row_s_${targetItem.id}`;
@@ -963,7 +977,11 @@
                 }
             });
             if(tbSK) tbSK.innerHTML = hSK; if(tbS) tbS.innerHTML = hS; if(tbO) tbO.innerHTML = hO;
-            if(adaAktif && currentUser.departemen !== 'Gudang') { document.getElementById('btnHapusSemua')?.classList.remove('hidden'); document.getElementById('btnExportPermintaan')?.classList.remove('hidden'); document.getElementById('btnExportPenjualan')?.classList.remove('hidden'); }
+            if(currentUser.departemen !== 'Gudang') { 
+                document.getElementById('btnHapusSemua')?.classList.remove('hidden'); 
+                document.getElementById('btnExportPermintaan')?.classList.remove('hidden'); 
+                document.getElementById('btnExportPenjualan')?.classList.remove('hidden'); 
+            }
         }
 
         function populateFilters() {
@@ -1009,6 +1027,166 @@
             let inv = DB.get('master_inventory'); let date = localStorage.getItem('master_inventory_date'); let statEl = document.getElementById('masterInventoryStatus'); let tbody = document.getElementById('tableBodyMasterPreview');
             if(statEl) statEl.innerHTML = inv.length > 0 ? `✅ <strong>${inv.length}</strong> data (${date})` : `❌ Belum ada Master Data`;
             if(tbody) tbody.innerHTML = inv.slice(0,100).map(d => `<tr><td>${d.brand}</td><td>${d.product}</td><td>${d.variant}</td><td><code>${d.code}</code></td><td>${d.collection}</td><td>${d.btk}</td><td>${d.gu}</td><td>${d.grec}</td><td>${d.gtok}</td><td>${d.gweb}</td><td>${d.total}</td></tr>`).join('');
+        }
+
+        // ==========================================
+        // FITUR EXPORT LAPORAN EXCEL (DENGAN PILIHAN BAZAAR SUPERADMIN)
+        // ==========================================
+        async function exportExcel(type) {
+            let targetBazaar = activeBazaarName;
+
+            // Jika role adalah Superadmin atau activeBazaarName kosong, tampilkan opsi pilihan bazaar
+            if (currentUser.departemen === 'Superadmin' || !targetBazaar) {
+                let bazaarsList = DB.get('bazaars_list');
+                let options = bazaarsList.map(b => b.name);
+                
+                // Ambil juga alternatif dari bazaar_items jika ada yang belum terdaftar di bazaars_list
+                let items = DB.get('bazaar_items');
+                items.forEach(i => { if (i.bazaar_name && !options.includes(i.bazaar_name)) options.push(i.bazaar_name); });
+
+                if (options.length === 0) return UI.alert("Kosong", "Belum ada data bazaar yang tersedia di sistem.", "warning");
+
+                let selectedBazaar = await UI.select("Pilih Bazaar", "Silakan pilih bazaar untuk mendownload laporan:", options);
+                if (!selectedBazaar) return; // Dibatalkan oleh user
+                targetBazaar = selectedBazaar;
+            }
+
+            let items = DB.get('bazaar_items').filter(i => i.bazaar_name === targetBazaar && i.status === 'active');
+            if (items.length === 0) return UI.alert("Kosong", `Tidak ada data aktif untuk bazaar "${targetBazaar}".`, "warning");
+
+            // Membuat struktur file Excel dengan CSS Inline agar hasil rapi dan bergaris
+            let tableHtml = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+            <head>
+                <meta charset="UTF-8">
+                <!--[if gte mso 9]>
+                <xml>
+                    <x:ExcelWorkbook>
+                        <x:ExcelWorksheets>
+                            <x:ExcelWorksheet>
+                                <x:Name>Laporan ${type}</x:Name>
+                                <x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>
+                            </x:ExcelWorksheet>
+                        </x:ExcelWorksheets>
+                    </x:ExcelWorkbook>
+                </xml>
+                <![endif]-->
+            </head>
+            <body>`;
+
+            // Header untuk memperjelas informasi laporan
+            tableHtml += `<h2 style="font-family: sans-serif;">Laporan ${type === 'permintaan' ? 'Permintaan & Packing Gudang' : 'Penjualan & Stok'}</h2>`;
+            tableHtml += `<p style="font-family: sans-serif;"><b>Bazaar/Event:</b> ${targetBazaar}<br><b>Waktu Download:</b> ${new Date().toLocaleString('id-ID')}</p>`;
+            
+            // Mulai Tabel
+            tableHtml += `<table border="1" style="border-collapse: collapse; font-family: sans-serif; font-size: 12px; width: 100%;">`;
+
+            if (type === 'permintaan') {
+                tableHtml += `
+                <thead style="background-color: #4338ca; color: white; font-weight: bold;">
+                    <tr>
+                        <th style="padding: 10px;">No</th>
+                        <th style="padding: 10px;">Brand</th>
+                        <th style="padding: 10px;">Produk (Baju)</th>
+                        <th style="padding: 10px;">Variant</th>
+                        <th style="padding: 10px;">Kode Item</th>
+                        <th style="padding: 10px;">Qty Awal Diminta (Sales)</th>
+                        <th style="padding: 10px;">Qty Aktual (Dikirim Gudang)</th>
+                        <th style="padding: 10px;">Perubahan Qty</th>
+                        <th style="padding: 10px;">Status Packing</th>
+                        <th style="padding: 10px;">Lokasi / Kardus</th>
+                        <th style="padding: 10px;">Keterangan Sales</th>
+                        <th style="padding: 10px;">Catatan Gudang</th>
+                        <th style="padding: 10px;">Waktu Request</th>
+                    </tr>
+                </thead><tbody>`;
+
+                items.forEach((item, index) => {
+                    let qtyAwal = item.original_qty || item.qty_in;
+                    let status = item.status_pengiriman || "Belum di packing";
+                    
+                    if (status === 'Menunggu Gudang' || status === 'Menunggu Refill Gudang') {
+                        status = "Belum di packing";
+                    }
+
+                    let kardus = item.kardus && item.kardus !== "-" ? item.kardus : "Belum ada lokasi kardus";
+                    let ketSales = item.keterangan_sales && item.keterangan_sales !== "-" ? item.keterangan_sales : "-";
+                    let ketGudang = item.keterangan_gudang && item.keterangan_gudang !== "-" ? item.keterangan_gudang : "-";
+                    
+                    let isChanged = qtyAwal !== item.qty_in;
+                    let tClass = isChanged ? 'background-color: #fef08a;' : ''; 
+                    let perubahanText = isChanged ? `Kurang/Berubah (-${qtyAwal - item.qty_in})` : "Sesuai";
+
+                    tableHtml += `
+                    <tr style="${tClass}">
+                        <td style="padding: 5px; text-align: center;">${index + 1}</td>
+                        <td style="padding: 5px;">${item.brand || '-'}</td>
+                        <td style="padding: 5px;">${item.product || '-'}</td>
+                        <td style="padding: 5px;">${item.variant || '-'}</td>
+                        <td style="padding: 5px; mso-number-format:'\\@';">${item.code || '-'}</td>
+                        <td style="padding: 5px; text-align: center;">${qtyAwal}</td>
+                        <td style="padding: 5px; text-align: center;"><b>${item.qty_in}</b></td>
+                        <td style="padding: 5px; text-align: center; color: ${isChanged ? 'red' : 'green'};">${perubahanText}</td>
+                        <td style="padding: 5px; font-weight: bold;">${status}</td>
+                        <td style="padding: 5px; text-align: center;">${kardus}</td>
+                        <td style="padding: 5px;">${ketSales}</td>
+                        <td style="padding: 5px;">${ketGudang}</td>
+                        <td style="padding: 5px;">${item.req_date || '-'}</td>
+                    </tr>`;
+                });
+            } else if (type === 'penjualan') {
+                tableHtml += `
+                <thead style="background-color: #10b981; color: white; font-weight: bold;">
+                    <tr>
+                        <th style="padding: 10px;">No</th>
+                        <th style="padding: 10px;">Brand</th>
+                        <th style="padding: 10px;">Produk (Baju)</th>
+                        <th style="padding: 10px;">Variant</th>
+                        <th style="padding: 10px;">Kode Item</th>
+                        <th style="padding: 10px;">Total Dikirim Gudang (Stok Awal)</th>
+                        <th style="padding: 10px;">Total Laku (Terjual)</th>
+                        <th style="padding: 10px;">Sisa Stok Berjalan</th>
+                        <th style="padding: 10px;">Rincian Penjualan (Tgl : Qty)</th>
+                    </tr>
+                </thead><tbody>`;
+
+                items.forEach((item, index) => {
+                    let sisa = item.qty_in - item.qty_sold;
+                    let historyStr = "-";
+                    
+                    if (item.sales_history && item.sales_history.length > 0) {
+                        historyStr = item.sales_history.map(h => `• ${h.date} (Laku: ${h.qty} pcs)`).join('<br style="mso-data-placement:same-cell;"/>');
+                    }
+
+                    tableHtml += `
+                    <tr>
+                        <td style="padding: 5px; text-align: center;">${index + 1}</td>
+                        <td style="padding: 5px;">${item.brand || '-'}</td>
+                        <td style="padding: 5px;">${item.product || '-'}</td>
+                        <td style="padding: 5px;">${item.variant || '-'}</td>
+                        <td style="padding: 5px; mso-number-format:'\\@';">${item.code || '-'}</td>
+                        <td style="padding: 5px; text-align: center;">${item.qty_in}</td>
+                        <td style="padding: 5px; text-align: center; color: #10b981;"><b>${item.qty_sold}</b></td>
+                        <td style="padding: 5px; text-align: center; color: ${sisa === 0 ? 'red' : 'black'};"><b>${sisa}</b></td>
+                        <td style="padding: 5px;">${historyStr}</td>
+                    </tr>`;
+                });
+            }
+
+            tableHtml += `</tbody></table></body></html>`;
+            
+            let blob = new Blob([tableHtml], { type: 'application/vnd.ms-excel' });
+            let url = URL.createObjectURL(blob);
+            let a = document.createElement("a");
+            a.href = url;
+            
+            let dateStr = new Date().toISOString().split('T')[0];
+            let safeName = targetBazaar.replace(/[^a-zA-Z0-9]/g, '_'); 
+            a.download = `Lap_${type.toUpperCase()}_${safeName}_${dateStr}.xls`;
+            
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         }
     </script>
 </body>
