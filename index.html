@@ -574,20 +574,26 @@
         };
 
         // ==========================================
-        // SCANNER LOGIC (DIPERBARUI UNTUK BARCODE 1D & ANTI-FREEZE)
+        // SCANNER LOGIC (DIPERBARUI UNTUK SENSITIVITAS & JARAK JAUH)
         // ==========================================
         let html5QrcodeScanner;
         function openScanner(actionType) {
             document.getElementById('scannerModal').classList.add('active');
             
-            // Konfigurasi khusus untuk meningkatkan sensitivitas Barcode 1D
             html5QrcodeScanner = new Html5QrcodeScanner(
                 "qr-reader", 
                 { 
-                    fps: 10, 
-                    qrbox: { width: 300, height: 150 },
+                    fps: 15, // Ditingkatkan agar kamera lebih cepat menangkap gambar
+                    qrbox: { width: 300, height: 150 }, // Bentuk persegi panjang untuk Barcode 1D
                     rememberLastUsedCamera: true,
-                    // Mengaktifkan algoritma deteksi barcode native bawaan HP jika tersedia
+                    // Memaksa kamera HP menggunakan resolusi tinggi (HD/1080p) dan Auto-Focus
+                    videoConstraints: {
+                        facingMode: "environment", // Kamera belakang
+                        width: { min: 1280, ideal: 1920, max: 2560 }, // Resolusi tinggi
+                        height: { min: 720, ideal: 1080, max: 1440 },
+                        advanced: [{ focusMode: "continuous" }] // Fokus otomatis terus-menerus
+                    },
+                    // Mengaktifkan algoritma deteksi barcode bawaan HP (Native API)
                     experimentalFeatures: {
                         useBarCodeDetectorIfSupported: true
                     }
@@ -596,18 +602,18 @@
             );
             
             html5QrcodeScanner.render((decodedText) => { 
-                // 1. Jeda sementara kamera agar tidak terus memindai dan crash
+                // 1. Jeda sementara kamera agar tidak terus memindai dan crash (Freeze)
                 html5QrcodeScanner.pause(true);
                 // 2. Tutup modal kamera
                 closeScanner(); 
                 
-                // 3. Beri jeda 400ms sebelum memunculkan UI Peringatan (menghindari freeze)
+                // 3. Beri jeda sedikit sebelum memunculkan UI (menghindari antrean memori penuh)
                 setTimeout(() => {
                     handleScanResult(decodedText, actionType); 
                 }, 400);
                 
             }, (error) => {
-                // Ignore background scan errors
+                // Abaikan error background agar tidak membuat perangkat lag
             });
         }
         
@@ -1061,28 +1067,31 @@
         }
 
         // ==========================================
-        // FITUR EXPORT LAPORAN EXCEL
+        // FITUR EXPORT LAPORAN EXCEL (DENGAN PILIHAN BAZAAR SUPERADMIN)
         // ==========================================
         async function exportExcel(type) {
             let targetBazaar = activeBazaarName;
 
+            // Jika role adalah Superadmin atau activeBazaarName kosong, tampilkan opsi pilihan bazaar
             if (currentUser.departemen === 'Superadmin' || !targetBazaar) {
                 let bazaarsList = DB.get('bazaars_list');
                 let options = bazaarsList.map(b => b.name);
                 
+                // Ambil juga alternatif dari bazaar_items jika ada yang belum terdaftar di bazaars_list
                 let items = DB.get('bazaar_items');
                 items.forEach(i => { if (i.bazaar_name && !options.includes(i.bazaar_name)) options.push(i.bazaar_name); });
 
                 if (options.length === 0) return UI.alert("Kosong", "Belum ada data bazaar yang tersedia di sistem.", "warning");
 
                 let selectedBazaar = await UI.select("Pilih Bazaar", "Silakan pilih bazaar untuk mendownload laporan:", options);
-                if (!selectedBazaar) return; 
+                if (!selectedBazaar) return; // Dibatalkan oleh user
                 targetBazaar = selectedBazaar;
             }
 
             let items = DB.get('bazaar_items').filter(i => i.bazaar_name === targetBazaar && i.status === 'active');
             if (items.length === 0) return UI.alert("Kosong", `Tidak ada data aktif untuk bazaar "${targetBazaar}".`, "warning");
 
+            // Membuat struktur file Excel dengan CSS Inline agar hasil rapi dan bergaris
             let tableHtml = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
             <head>
                 <meta charset="UTF-8">
@@ -1101,9 +1110,11 @@
             </head>
             <body>`;
 
+            // Header untuk memperjelas informasi laporan
             tableHtml += `<h2 style="font-family: sans-serif;">Laporan ${type === 'permintaan' ? 'Permintaan & Packing Gudang' : 'Penjualan & Stok'}</h2>`;
             tableHtml += `<p style="font-family: sans-serif;"><b>Bazaar/Event:</b> ${targetBazaar}<br><b>Waktu Download:</b> ${new Date().toLocaleString('id-ID')}</p>`;
             
+            // Mulai Tabel
             tableHtml += `<table border="1" style="border-collapse: collapse; font-family: sans-serif; font-size: 12px; width: 100%;">`;
 
             if (type === 'permintaan') {
