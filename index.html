@@ -2,11 +2,17 @@
 <html lang="id">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Dashbord Sales Zaskia Sungkar & Shi By Shireen</title>
     
     <link rel="manifest" href="./manifest.json">
     <meta name="theme-color" content="#1e1b4b">
+
+    <!-- META TAG KHUSUS iOS (APPLE) -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Z&S Hub">
+    <link rel="apple-touch-icon" href="./icon-192x192.png">
 
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
@@ -16,15 +22,14 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getFirestore, doc, setDoc, onSnapshot, enableIndexedDbPersistence } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
-        // TODO: Ganti dengan konfigurasi dari Firebase Console Anda
         const firebaseConfig = {
-  apiKey: "AIzaSyCv-wlyi4DXxhA-z5mI52-8DeLxpwLaNj8",
-  authDomain: "bazaar-inventory.firebaseapp.com",
-  projectId: "bazaar-inventory",
-  storageBucket: "bazaar-inventory.firebasestorage.app",
-  messagingSenderId: "324285970033",
-  appId: "1:324285970033:web:c255a12baa85c259e9cdd0"
-};
+            apiKey: "AIzaSyCv-wlyi4DXxhA-z5mI52-8DeLxpwLaNj8",
+            authDomain: "bazaar-inventory.firebaseapp.com",
+            projectId: "bazaar-inventory",
+            storageBucket: "bazaar-inventory.firebasestorage.app",
+            messagingSenderId: "324285970033",
+            appId: "1:324285970033:web:c255a12baa85c259e9cdd0"
+        };
 
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
@@ -468,7 +473,6 @@
             get: function(colName) { return window.appState[colName] || []; },
             set: function(colName, itemsArray) {
                 if (!window.db) return;
-                // Jalankan penyimpanan di background tanpa memblokir UI (Tanpa 'await')
                 window.setDoc(window.doc(window.db, "appData", colName), { items: itemsArray })
                     .catch(e => console.error("Firebase Sync Error:", e));
             }
@@ -485,7 +489,6 @@
             });
             setTimeout(() => { 
                 document.getElementById('dbLoading').classList.add('hidden'); 
-                // CEK SESSION STORAGE: Jika sudah login, kembalikan ke dashboard tanpa perlu login ulang
                 let savedUser = sessionStorage.getItem('loggedInUser');
                 if(savedUser) {
                     currentUser = JSON.parse(savedUser);
@@ -498,7 +501,6 @@
 
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => { 
-                // TAMBAHAN CACHE BUSTER: Parameter ?v=update1 memaksa HP mengabaikan cache browser!
                 navigator.serviceWorker.register('./sw.js?v=update1').catch(e => console.log(e)); 
             });
         }
@@ -572,53 +574,84 @@
         };
 
         // ==========================================
-        // SCANNER LOGIC (DIPERBARUI UNTUK BARCODE 1D)
+        // SCANNER LOGIC (DIPERBARUI UNTUK BARCODE 1D & ANTI-FREEZE)
         // ==========================================
         let html5QrcodeScanner;
         function openScanner(actionType) {
             document.getElementById('scannerModal').classList.add('active');
             
-            // Mengubah qrbox menjadi persegi panjang agar pas dengan Barcode 1D
+            // Konfigurasi khusus untuk meningkatkan sensitivitas Barcode 1D
             html5QrcodeScanner = new Html5QrcodeScanner(
                 "qr-reader", 
                 { 
                     fps: 10, 
-                    qrbox: { width: 300, height: 150 }, // Bentuk persegi panjang
-                    rememberLastUsedCamera: true
+                    qrbox: { width: 300, height: 150 },
+                    rememberLastUsedCamera: true,
+                    // Mengaktifkan algoritma deteksi barcode native bawaan HP jika tersedia
+                    experimentalFeatures: {
+                        useBarCodeDetectorIfSupported: true
+                    }
                 }, 
                 false
             );
             
             html5QrcodeScanner.render((decodedText) => { 
+                // 1. Jeda sementara kamera agar tidak terus memindai dan crash
+                html5QrcodeScanner.pause(true);
+                // 2. Tutup modal kamera
                 closeScanner(); 
-                handleScanResult(decodedText, actionType); 
+                
+                // 3. Beri jeda 400ms sebelum memunculkan UI Peringatan (menghindari freeze)
+                setTimeout(() => {
+                    handleScanResult(decodedText, actionType); 
+                }, 400);
+                
             }, (error) => {
-                // Mengabaikan error proses pemindaian berjalan agar tidak spam di console
+                // Ignore background scan errors
             });
         }
         
         function closeScanner() {
             document.getElementById('scannerModal').classList.remove('active');
-            if (html5QrcodeScanner) html5QrcodeScanner.clear().catch(e => console.error(e));
+            if (html5QrcodeScanner) {
+                html5QrcodeScanner.clear().catch(e => console.error(e));
+            }
         }
+        
         async function handleScanResult(scannedCode, actionType) {
             let items = DB.get('bazaar_items');
+            
+            // Cari data berdasarkan barcode yang di-scan dengan data di aplikasi
             let targetIndex = items.findIndex(i => i.code.toLowerCase() === scannedCode.trim().toLowerCase() && (activeBazaarName ? i.bazaar_name === activeBazaarName : true) && i.status === 'active');
-            if (targetIndex === -1) return UI.alert("Tidak Ditemukan", `Kode produk "${scannedCode}" tidak ditemukan di database.`, "error");
+            
+            if (targetIndex === -1) {
+                // Jika data belum ditambahkan ke daftar permintaan (atau master), muncul peringatan
+                return UI.alert("Tidak Ditemukan", `Kode produk "${scannedCode}" tidak ditemukan pada daftar aktif bazaar ini.\n\nPastikan Sales sudah menambahkan barang ini ke daftar permintaan.`, "error");
+            }
 
             let targetItem = items[targetIndex];
             let rowId = actionType === 'kemas' ? `row_sk_${targetItem.id}` : `row_s_${targetItem.id}`;
             let rowEl = document.getElementById(rowId);
-            if(rowEl) { rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); rowEl.classList.add('scanned-highlight'); setTimeout(() => rowEl.classList.remove('scanned-highlight'), 2000); }
+            if(rowEl) { 
+                rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); 
+                rowEl.classList.add('scanned-highlight'); 
+                setTimeout(() => rowEl.classList.remove('scanned-highlight'), 2000); 
+            }
 
-            if (actionType === 'kemas') openPackingModal(targetItem.id); 
-            else if (actionType === 'jual') {
+            if (actionType === 'kemas') {
+                openPackingModal(targetItem.id); 
+            } else if (actionType === 'jual') {
                 let st = targetItem.status_pengiriman || "Menunggu Gudang";
-                if(st === 'Dikemas') terimaBarangSales(targetItem.id); else catatPenjualan(targetItem.id);
-            } else if (actionType === 'opname') stockOpname(targetItem.id);
+                if(st === 'Dikemas') terimaBarangSales(targetItem.id); 
+                else catatPenjualan(targetItem.id);
+            } else if (actionType === 'opname') {
+                stockOpname(targetItem.id);
+            }
         }
 
+        // ==========================================
         // INIT & AUTH
+        // ==========================================
         let currentUser = null; let activeBazaarName = sessionStorage.getItem('activeBazaarName') || ""; let pendingUploadData = [];
         function togglePassword(id, iconId) { let input = document.getElementById(id); let icon = document.getElementById(iconId); if (input.type === "password") { input.type = "text"; icon.innerHTML = "🙈"; } else { input.type = "password"; icon.innerHTML = "👁️"; } }
         function showLogin() { document.getElementById('loginSection').classList.remove('hidden'); document.getElementById('registerSection').classList.add('hidden'); document.getElementById('dashboardSection').classList.add('hidden'); document.getElementById('navbar').classList.add('hidden'); }
@@ -629,7 +662,7 @@
             let validUser = users.find(u => u.username.toLowerCase() === user.toLowerCase() && u.password === pass);
             if(validUser) { 
                 currentUser = validUser; 
-                sessionStorage.setItem('loggedInUser', JSON.stringify(validUser)); // PENYIMPANAN SESI LOGIN DITAMBAHKAN
+                sessionStorage.setItem('loggedInUser', JSON.stringify(validUser));
                 showDashboard(); 
                 document.getElementById('loginUser').value = ''; document.getElementById('loginPass').value = ''; 
             } else { await UI.alert("Gagal", "Username/Password salah.", "error"); }
@@ -651,7 +684,7 @@
             let conf = await UI.confirm("Keluar?", "Yakin keluar?", "question"); 
             if(conf) { 
                 currentUser = null; 
-                sessionStorage.removeItem('loggedInUser'); // PENGHAPUSAN SESI LOGIN
+                sessionStorage.removeItem('loggedInUser');
                 activeBazaarName = ""; 
                 sessionStorage.removeItem('activeBazaarName'); 
                 showLogin(); 
@@ -750,7 +783,7 @@
                 let existingIdx = items.findIndex(i => i.code === inv[idx].code && i.bazaar_name === activeBazaarName && i.status === 'active');
                 if (existingIdx !== -1) {
                     items[existingIdx].original_qty += qty; items[existingIdx].qty_in += qty; items[existingIdx].status_pengiriman = 'Menunggu Refill Gudang'; items[existingIdx].req_date = new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}); items[existingIdx].keterangan_gudang = '-';
-                    if (ketSales) items[existingIdx].keterangan_sales = ketSales; // Update keterangan manual
+                    if (ketSales) items[existingIdx].keterangan_sales = ketSales;
                 } else {
                     items.push({ id: Date.now() + Math.random(), bazaar_name: activeBazaarName, brand: inv[idx].brand, product: inv[idx].product, variant: inv[idx].variant, code: inv[idx].code, collection: inv[idx].collection || "-", original_qty: qty, qty_in: qty, qty_sold: 0, status: 'active', fisik_kembali: 0, status_pengiriman: 'Menunggu Gudang', keterangan_gudang: '-', req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}), keterangan_sales: ketSales || "-" });
                 }
@@ -798,7 +831,9 @@
         }
         function batalUploadBawaan() { pendingUploadData = []; document.getElementById('uploadPreviewSection').classList.add('hidden'); document.getElementById('fileBawaan').value = ''; }
 
-        // PERUBAHAN: MODAL PACKING (GUDANG)
+        // ==========================================
+        // MODAL PACKING (GUDANG)
+        // ==========================================
         let currentPackingId = null;
         function openPackingModal(id) {
             let items = DB.get('bazaar_items');
@@ -832,7 +867,7 @@
             } else if (st === 'Kosong') {
                 refillEl.classList.add('hidden');
                 kardusEl.classList.add('hidden');
-                qtyEl.value = 0; // Auto 0 if kosong
+                qtyEl.value = 0;
             } else {
                 refillEl.classList.add('hidden');
                 kardusEl.classList.remove('hidden');
@@ -940,10 +975,7 @@
                 let sisaSistem = item.qty_in - item.qty_sold; let b = item.brand||"-", p = item.product||"-", v = item.variant||"-", c = item.code||"-";
                 let st = item.status_pengiriman || 'Menunggu Gudang', kg = item.keterangan_gudang || '-'; let orig = item.original_qty || item.qty_in; let changed = orig !== item.qty_in; let tClass = changed ? 'highlight-change' : '';
                 
-                // Teks kardus untuk mempermudah Gudang & Sales
                 let kdText = item.kardus && item.kardus !== "-" ? `<br><span style="color:var(--info); font-size:0.75rem;">📦 Kardus: ${item.kardus}</span>` : '';
-                
-                // Teks Keterangan dari Sales 
                 let ketSalesTxt = item.keterangan_sales && item.keterangan_sales !== "-" ? `<br><span style="color:var(--primary); font-size:0.75rem; font-weight:normal;">Ket: ${item.keterangan_sales}</span>` : '';
 
                 if(item.status === 'active') {
@@ -962,7 +994,6 @@
                             let bJ = st === 'Diterima Sales' ? `<button class="btn-success" onclick="catatPenjualan(${item.id})">💸 Jual</button>` : '';
                             let bO = currentUser.departemen === 'Superadmin' ? `<button class="btn-warning" onclick="stockOpname(${item.id})">📋 Opname</button>` : '';
                             
-                            // Logika Qty Permintaan Awal jika berbeda dengan aktual Gudang
                             let qtyDisplay = `<strong style="font-size:1rem;">${item.qty_in}</strong>`;
                             if (changed) {
                                 qtyDisplay = `<div style="font-size:0.75rem; color:var(--danger); text-decoration:line-through; font-weight:normal;">Permintaan: ${orig}</div><div style="font-size:1rem; font-weight:bold; color:var(--success);">Terkirim: ${item.qty_in}</div>`;
@@ -1030,31 +1061,28 @@
         }
 
         // ==========================================
-        // FITUR EXPORT LAPORAN EXCEL (DENGAN PILIHAN BAZAAR SUPERADMIN)
+        // FITUR EXPORT LAPORAN EXCEL
         // ==========================================
         async function exportExcel(type) {
             let targetBazaar = activeBazaarName;
 
-            // Jika role adalah Superadmin atau activeBazaarName kosong, tampilkan opsi pilihan bazaar
             if (currentUser.departemen === 'Superadmin' || !targetBazaar) {
                 let bazaarsList = DB.get('bazaars_list');
                 let options = bazaarsList.map(b => b.name);
                 
-                // Ambil juga alternatif dari bazaar_items jika ada yang belum terdaftar di bazaars_list
                 let items = DB.get('bazaar_items');
                 items.forEach(i => { if (i.bazaar_name && !options.includes(i.bazaar_name)) options.push(i.bazaar_name); });
 
                 if (options.length === 0) return UI.alert("Kosong", "Belum ada data bazaar yang tersedia di sistem.", "warning");
 
                 let selectedBazaar = await UI.select("Pilih Bazaar", "Silakan pilih bazaar untuk mendownload laporan:", options);
-                if (!selectedBazaar) return; // Dibatalkan oleh user
+                if (!selectedBazaar) return; 
                 targetBazaar = selectedBazaar;
             }
 
             let items = DB.get('bazaar_items').filter(i => i.bazaar_name === targetBazaar && i.status === 'active');
             if (items.length === 0) return UI.alert("Kosong", `Tidak ada data aktif untuk bazaar "${targetBazaar}".`, "warning");
 
-            // Membuat struktur file Excel dengan CSS Inline agar hasil rapi dan bergaris
             let tableHtml = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
             <head>
                 <meta charset="UTF-8">
@@ -1073,11 +1101,9 @@
             </head>
             <body>`;
 
-            // Header untuk memperjelas informasi laporan
             tableHtml += `<h2 style="font-family: sans-serif;">Laporan ${type === 'permintaan' ? 'Permintaan & Packing Gudang' : 'Penjualan & Stok'}</h2>`;
             tableHtml += `<p style="font-family: sans-serif;"><b>Bazaar/Event:</b> ${targetBazaar}<br><b>Waktu Download:</b> ${new Date().toLocaleString('id-ID')}</p>`;
             
-            // Mulai Tabel
             tableHtml += `<table border="1" style="border-collapse: collapse; font-family: sans-serif; font-size: 12px; width: 100%;">`;
 
             if (type === 'permintaan') {
