@@ -171,7 +171,7 @@
             <div id="sysModalText" class="modal-text"></div>
             
             <div id="sysModalInputContainer" class="form-group hidden" style="margin-bottom: 20px;">
-                <input type="text" id="sysModalInput" style="text-align: center; font-size: 1rem;">
+                <input type="number" id="sysModalInput" style="text-align: center; font-size: 1rem;">
             </div>
             
             <div id="sysModalSelectContainer" class="form-group hidden" style="margin-bottom: 20px; text-align: left;">
@@ -938,20 +938,76 @@
             closePackingModal();
         }
 
-        async function terimaBarangSales(id) { let items = DB.get('bazaar_items'); let idx = items.findIndex(i => i.id === id); let conf = await UI.confirm("Terima", "Sesuai?", "question"); if(conf) { items[idx].status_pengiriman = 'Diterima Sales'; await DB.set('bazaar_items', items); } }
+        // ==========================================
+        // PROSES TERIMA BARANG (SALES) & REVISI QTY
+        // ==========================================
+        async function terimaBarangSales(id) { 
+            let items = DB.get('bazaar_items'); 
+            let idx = items.findIndex(i => i.id === id); 
+            let conf = await UI.confirm("Terima", "Apakah jumlah fisik sesuai?", "question"); 
+            if(conf) { 
+                items[idx].status_pengiriman = 'Diterima Sales'; 
+                items[idx].qty_revisi_sales = items[idx].qty_in; // Menandakan bahwa jumlah sudah klop/sama
+                await DB.set('bazaar_items', items); 
+            } 
+        }
+
+        async function terimaBarangTidakSesuai(id) {
+            let items = DB.get('bazaar_items'); 
+            let inv = DB.get('master_inventory');
+            let idx = items.findIndex(i => i.id === id);
+            if(idx === -1) return;
+            
+            let item = items[idx];
+            let res = await UI.prompt("Barang Tidak Sesuai", `Gudang menyiapkan: ${item.qty_in} pcs.\nBerapa jumlah aktual yang Sales terima?`, item.qty_in);
+            if(res === null || res === "") return;
+            
+            let newQty = parseInt(res);
+            if(isNaN(newQty) || newQty < 0) return UI.alert("Error", "Qty harus berupa angka yang valid!", "error");
+            
+            let note = await UI.prompt("Keterangan", "Tulis alasan perbedaan barang:");
+            
+            // Selisih dikembalikan / disesuaikan lagi dengan master inventory
+            let diff = item.qty_in - newQty;
+            if(diff !== 0) {
+                let mIdx = inv.findIndex(m => m.code === item.code);
+                if(mIdx !== -1) inv[mIdx].total += diff;
+            }
+            
+            // Qty_in dibiarkan agar gudang tetap melihat riwayat aslinya.
+            item.qty_revisi_sales = newQty; 
+            item.status_pengiriman = 'Diterima Sales (Revisi)';
+            
+            let prevNote = (item.keterangan_sales && item.keterangan_sales !== "-") ? item.keterangan_sales + " | " : "";
+            item.keterangan_sales = prevNote + `Revisi Terima: ${newQty} pcs (${note || 'Tanpa keterangan'})`;
+            
+            await DB.set('bazaar_items', items);
+            await DB.set('master_inventory', inv);
+            UI.alert("Sukses", "Barang diterima dengan status revisi.", "success");
+        }
+
         async function catatPenjualan(id) {
             let items = DB.get('bazaar_items'); let idx = items.findIndex(i => i.id === id); let st = items[idx].status_pengiriman || "Menunggu Gudang";
             if(st === "Menunggu Gudang" || st === "Menunggu Refill Gudang" || st === "Tidak Dikemas" || st === "Dikemas") return UI.alert("Terkunci", "Belum diverifikasi terima.", "warning");
-            let sisa = items[idx].qty_in - items[idx].qty_sold; if(sisa === 0) return UI.alert("Habis", "Stok 0", "info");
+            
+            let actualQty = items[idx].qty_revisi_sales !== undefined ? items[idx].qty_revisi_sales : items[idx].qty_in;
+            let sisa = actualQty - items[idx].qty_sold; 
+            
+            if(sisa === 0) return UI.alert("Habis", "Stok 0", "info");
+            
             let bz = DB.get('bazaars_list').find(b => b.name === items[idx].bazaar_name); let dOpt = [];
             if(bz && bz.start_date && bz.end_date) { let curr = new Date(bz.start_date+"T12:00:00Z"); let end = new Date(bz.end_date+"T12:00:00Z"); while(curr <= end) { dOpt.push(curr.toISOString().split('T')[0]); curr.setDate(curr.getDate()+1); } }
             if(dOpt.length===0) dOpt.push(new Date().toISOString().split('T')[0]);
+            
             let res = await UI.salePrompt(`Jual`, `Sisa: ${sisa}`, dOpt, sisa); if(!res) return;
             items[idx].qty_sold += res.qty; items[idx].sales_history = items[idx].sales_history || []; items[idx].sales_history.push({ date: res.date, qty: res.qty });
             await DB.set('bazaar_items', items);
         }
         async function stockOpname(id) {
-            let items = DB.get('bazaar_items'); let idx = items.findIndex(i => i.id === id); let sisa = items[idx].qty_in - items[idx].qty_sold;
+            let items = DB.get('bazaar_items'); let idx = items.findIndex(i => i.id === id); 
+            let actualQty = items[idx].qty_revisi_sales !== undefined ? items[idx].qty_revisi_sales : items[idx].qty_in;
+            let sisa = actualQty - items[idx].qty_sold;
+            
             let opt = await UI.select("SO Kembali", `Sistem: ${sisa}`, ["Sesuai Sistem", "Tidak Sesuai"]); if(!opt) return;
             let fisik = sisa; if(opt !== "Sesuai Sistem") { let f = await UI.prompt("Fisik", "Jumlah?"); if(!f) return; fisik = parseInt(f); if(isNaN(fisik)) return; }
             items[idx].fisik_kembali = fisik; items[idx].status = 'done'; await DB.set('bazaar_items', items); await UI.alert("Sukses", "Opname disimpan", "success");
@@ -960,13 +1016,45 @@
         async function hapusBazaarData(bName) {
             let bazaars = DB.get('bazaars_list').filter(b => b.name !== bName); await DB.set('bazaars_list', bazaars);
             let items = DB.get('bazaar_items'); let inv = DB.get('master_inventory'); let itemsToKeep = [];
-            items.forEach(item => { if(item.bazaar_name === bName && item.status === 'active') { let mIdx = inv.findIndex(m => m.code === item.code); if(mIdx !== -1) inv[mIdx].total += (item.qty_in - item.qty_sold); } else { itemsToKeep.push(item); } });
+            items.forEach(item => { 
+                if(item.bazaar_name === bName && item.status === 'active') { 
+                    let mIdx = inv.findIndex(m => m.code === item.code); 
+                    if(mIdx !== -1) {
+                        let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
+                        inv[mIdx].total += (actualQty - item.qty_sold); 
+                    }
+                } else { itemsToKeep.push(item); } 
+            });
             await DB.set('bazaar_items', itemsToKeep); await DB.set('master_inventory', inv);
         }
         async function hapusBazaarSales() { let sel = document.getElementById('salesBazaarSelect').value; if(!sel || sel === 'NEW') return; let conf = await UI.confirm("Hapus?", "Yakin hapus bazaar?", "error"); if(conf) { await hapusBazaarData(sel); populateSalesBazaarDropdown(); UI.alert("Sukses", "Bazaar dihapus", "success"); } }
         async function hapusBazaarAdmin(bName) { let conf = await UI.confirm("Hapus?", `Yakin hapus ${bName}?`, "error"); if(conf) { await hapusBazaarData(bName); UI.alert("Sukses", "Terhapus", "success"); } }
-        async function hapusBarang(id) { let items = DB.get('bazaar_items'); let inv = DB.get('master_inventory'); let idx = items.findIndex(i => i.id === id); if(idx === -1) return; let conf = await UI.confirm("Hapus?", `Kembalikan ${items[idx].code} ke gudang?`, "warning"); if(!conf) return; let mIdx = inv.findIndex(m => m.code === items[idx].code); if(mIdx !== -1) inv[mIdx].total += (items[idx].qty_in - items[idx].qty_sold); items.splice(idx, 1); await DB.set('bazaar_items', items); await DB.set('master_inventory', inv); UI.alert("Sukses", "Terhapus", "success"); }
-        async function hapusSemuaBarang() { let conf = await UI.confirm("Hapus Semua?", "Semua dikembalikan ke master?", "error"); if(!conf) return; let items = DB.get('bazaar_items'); let inv = DB.get('master_inventory'); let itemsToKeep = []; items.forEach(item => { let match = activeBazaarName ? (item.bazaar_name === activeBazaarName) : true; if(match && item.status === 'active') { let mIdx = inv.findIndex(m => m.code === item.code); if(mIdx !== -1) inv[mIdx].total += (item.qty_in - item.qty_sold); } else { itemsToKeep.push(item); } }); await DB.set('bazaar_items', itemsToKeep); await DB.set('master_inventory', inv); UI.alert("Sukses", "Semua terhapus", "success"); }
+        
+        async function hapusBarang(id) { 
+            let items = DB.get('bazaar_items'); let inv = DB.get('master_inventory'); let idx = items.findIndex(i => i.id === id); if(idx === -1) return; 
+            let conf = await UI.confirm("Hapus?", `Kembalikan ${items[idx].code} ke gudang?`, "warning"); if(!conf) return; 
+            let mIdx = inv.findIndex(m => m.code === items[idx].code); 
+            if(mIdx !== -1) {
+                let actualQty = items[idx].qty_revisi_sales !== undefined ? items[idx].qty_revisi_sales : items[idx].qty_in;
+                inv[mIdx].total += (actualQty - items[idx].qty_sold); 
+            }
+            items.splice(idx, 1); await DB.set('bazaar_items', items); await DB.set('master_inventory', inv); UI.alert("Sukses", "Terhapus", "success"); 
+        }
+        async function hapusSemuaBarang() { 
+            let conf = await UI.confirm("Hapus Semua?", "Semua dikembalikan ke master?", "error"); if(!conf) return; 
+            let items = DB.get('bazaar_items'); let inv = DB.get('master_inventory'); let itemsToKeep = []; 
+            items.forEach(item => { 
+                let match = activeBazaarName ? (item.bazaar_name === activeBazaarName) : true; 
+                if(match && item.status === 'active') { 
+                    let mIdx = inv.findIndex(m => m.code === item.code); 
+                    if(mIdx !== -1) {
+                        let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
+                        inv[mIdx].total += (actualQty - item.qty_sold); 
+                    }
+                } else { itemsToKeep.push(item); } 
+            }); 
+            await DB.set('bazaar_items', itemsToKeep); await DB.set('master_inventory', inv); UI.alert("Sukses", "Semua terhapus", "success"); 
+        }
         async function hapusRiwayat(id) { let items = DB.get('bazaar_items'); let idx = items.findIndex(i => i.id === id); if(idx===-1) return; let conf = await UI.confirm("Hapus?", "", "warning"); if(conf) { items.splice(idx, 1); await DB.set('bazaar_items', items); } }
         async function hapusSemuaRiwayat() { let conf = await UI.confirm("Hapus Semua?", "", "error"); if(conf) { let items = DB.get('bazaar_items').filter(i => i.status === 'active'); await DB.set('bazaar_items', items); } }
 
@@ -981,7 +1069,10 @@
             
             items.forEach(item => {
                 if (currentUser.departemen !== 'Superadmin' && activeBazaarName && item.bazaar_name !== activeBazaarName) return;
-                let sisaSistem = item.qty_in - item.qty_sold; let b = item.brand||"-", p = item.product||"-", v = item.variant||"-", c = item.code||"-";
+                
+                let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
+                let sisaSistem = actualQty - item.qty_sold; 
+                let b = item.brand||"-", p = item.product||"-", v = item.variant||"-", c = item.code||"-";
                 let st = item.status_pengiriman || 'Menunggu Gudang', kg = item.keterangan_gudang || '-'; let orig = item.original_qty || item.qty_in; let changed = orig !== item.qty_in; let tClass = changed ? 'highlight-change' : '';
                 
                 let kdText = item.kardus && item.kardus !== "-" ? `<br><span style="color:var(--info); font-size:0.75rem;">📦 Kardus: ${item.kardus}</span>` : '';
@@ -990,21 +1081,36 @@
                 if(item.status === 'active') {
                     if (currentUser.departemen === 'Gudang' || currentUser.departemen === 'Superadmin') {
                         if(b.toLowerCase().includes(fGB) && p.toLowerCase().includes(fGP)) {
-                            let bdg = st === 'Dikemas' ? '✅ Dikemas' : (st === 'Tidak Dikemas' ? '❌ Kosong' : (st === 'Diterima Sales' ? '👍 Selesai' : '⏳ Menunggu'));
-                            hSK += `<tr class="${tClass}" id="row_sk_${item.id}"><td><strong>${b}</strong></td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center"><strong>${orig} pcs</strong>${ketSalesTxt}</td><td align="center" style="font-size:1.1rem; font-weight:bold;">${item.qty_in}</td><td>${bdg}<br><small>${kg}</small>${kdText}</td><td><button class="btn-info" onclick="openPackingModal(${item.id})">Kemas/Edit</button></td></tr>`;
+                            let bdg = st === 'Dikemas' ? '✅ Dikemas' : (st === 'Tidak Dikemas' ? '❌ Kosong' : (st === 'Diterima Sales' ? '👍 Selesai' : (st === 'Diterima Sales (Revisi)' ? '⚠️ Revisi Sales' : '⏳ Menunggu')));
+                            
+                            // Highlight untuk Gudang jika Sales merubah Qty
+                            let qtyGudangDisplay = `<strong style="font-size:1.1rem;">${item.qty_in}</strong>`;
+                            if (item.qty_revisi_sales !== undefined && item.qty_revisi_sales !== item.qty_in) {
+                                qtyGudangDisplay = `<span style="text-decoration:line-through; color:var(--danger);">${item.qty_in}</span><br><span style="color:var(--warning); font-size:1.1rem; font-weight:bold;">Revisi: ${item.qty_revisi_sales}</span>`;
+                            }
+
+                            hSK += `<tr class="${tClass}" id="row_sk_${item.id}"><td><strong>${b}</strong></td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center"><strong>${orig} pcs</strong>${ketSalesTxt}</td><td align="center">${qtyGudangDisplay}</td><td>${bdg}<br><small>${kg}</small>${kdText}</td><td><button class="btn-info" onclick="openPackingModal(${item.id})">Kemas/Edit</button></td></tr>`;
                         }
                     }
                     if(b.toLowerCase().includes(fSB) && p.toLowerCase().includes(fSP)) {
                         if(currentUser.departemen === 'Gudang') {
                             hS += `<tr class="${tClass}" id="row_s_${item.id}"><td>${item.bazaar_name}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${sisaSistem}</td><td><button class="btn-warning" onclick="stockOpname(${item.id})">Opname SO</button></td></tr>`;
                         } else {
-                            let bT = st === 'Dikemas' ? `<button class="btn-primary" onclick="terimaBarangSales(${item.id})">✅ Terima</button>` : '';
-                            let bJ = st === 'Diterima Sales' ? `<button class="btn-success" onclick="catatPenjualan(${item.id})">💸 Jual</button>` : '';
+                            let bT = '';
+                            if (st === 'Dikemas') {
+                                bT = `<button class="btn-primary" style="width:100%; margin-bottom:5px;" onclick="terimaBarangSales(${item.id})">✅ Sesuai</button>
+                                      <button class="btn-warning" style="width:100%;" onclick="terimaBarangTidakSesuai(${item.id})">⚠️ Revisi Qty</button>`;
+                            }
+                            
+                            let bJ = (st === 'Diterima Sales' || st === 'Diterima Sales (Revisi)') ? `<button class="btn-success" onclick="catatPenjualan(${item.id})">💸 Jual</button>` : '';
                             let bO = currentUser.departemen === 'Superadmin' ? `<button class="btn-warning" onclick="stockOpname(${item.id})">📋 Opname</button>` : '';
                             
                             let qtyDisplay = `<strong style="font-size:1rem;">${item.qty_in}</strong>`;
                             if (changed) {
                                 qtyDisplay = `<div style="font-size:0.75rem; color:var(--danger); text-decoration:line-through; font-weight:normal;">Permintaan: ${orig}</div><div style="font-size:1rem; font-weight:bold; color:var(--success);">Terkirim: ${item.qty_in}</div>`;
+                            }
+                            if (item.qty_revisi_sales !== undefined && item.qty_revisi_sales !== item.qty_in) {
+                                qtyDisplay += `<div style="font-size:0.85rem; font-weight:bold; color:var(--warning); margin-top:4px;">Diterima: ${item.qty_revisi_sales}</div>`;
                             }
 
                             hS += `<tr class="${tClass}" id="row_s_${item.id}"><td>${item.bazaar_name}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${qtyDisplay}</td><td align="center">${item.qty_sold}</td><td align="center"><strong>${sisaSistem}</strong></td><td>${st}${kdText}</td><td><div style="display:flex;flex-direction:column;gap:4px;">${bT}${bJ}${bO}<button class="btn-danger" onclick="hapusBarang(${item.id})">Hapus</button></div></td></tr>`;
@@ -1020,7 +1126,6 @@
             if(tbS) tbS.innerHTML = hS; 
             if(tbO) tbO.innerHTML = hO;
             
-            // Menampilkan tombol eksport laporan secara universal
             document.getElementById('btnExportPermintaanKemas')?.classList.remove('hidden');
             document.getElementById('btnExportPenjualanKemas')?.classList.remove('hidden');
             document.getElementById('btnExportPermintaan')?.classList.remove('hidden');
@@ -1028,7 +1133,6 @@
             document.getElementById('btnExportSO')?.classList.remove('hidden');
             document.getElementById('btnExportSORiwayat')?.classList.remove('hidden');
 
-            // Menyembunyikan opsi "Hapus Semua" khusus jika perannya hanya Gudang biasa
             if(currentUser.departemen === 'Gudang') { 
                 document.getElementById('btnHapusSemua')?.classList.add('hidden'); 
                 document.getElementById('btnHapusSemuaRiwayat')?.classList.add('hidden'); 
@@ -1083,7 +1187,7 @@
         }
 
         // ==========================================
-        // FITUR EXPORT LAPORAN EXCEL (DIPERBARUI DENGAN LAPORAN SO)
+        // FITUR EXPORT LAPORAN EXCEL
         // ==========================================
         async function exportExcel(type) {
             let targetBazaar = activeBazaarName;
@@ -1103,7 +1207,6 @@
             }
 
             let allItems = DB.get('bazaar_items').filter(i => i.bazaar_name === targetBazaar);
-            // Untuk laporan SO kembali, ambil semua status. Untuk permintaan/penjualan, hanya ambil yang masih 'active'.
             let itemsToExport = type === 'sokembali' ? allItems : allItems.filter(i => i.status === 'active');
 
             if (itemsToExport.length === 0) return UI.alert("Kosong", `Tidak ada data untuk bazaar "${targetBazaar}".`, "warning");
@@ -1143,7 +1246,8 @@
                         <th style="padding: 10px;">Kode Item</th>
                         <th style="padding: 10px;">Qty Awal Diminta (Sales)</th>
                         <th style="padding: 10px;">Qty Aktual (Dikirim Gudang)</th>
-                        <th style="padding: 10px;">Perubahan Qty</th>
+                        <th style="padding: 10px;">Qty Revisi (Diterima Sales)</th>
+                        <th style="padding: 10px;">Perubahan Qty (Sistem)</th>
                         <th style="padding: 10px;">Status Packing</th>
                         <th style="padding: 10px;">Lokasi / Kardus</th>
                         <th style="padding: 10px;">Keterangan Sales</th>
@@ -1168,6 +1272,9 @@
                     let tClass = isChanged ? 'background-color: #fef08a;' : ''; 
                     let perubahanText = isChanged ? `Kurang/Berubah (-${qtyAwal - item.qty_in})` : "Sesuai";
 
+                    let qtyRevisiDisplay = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : '-';
+                    let styleRevisi = (item.qty_revisi_sales !== undefined && item.qty_revisi_sales !== item.qty_in) ? 'color: red; font-weight: bold;' : '';
+
                     tableHtml += `
                     <tr style="${tClass}">
                         <td style="padding: 5px; text-align: center;">${index + 1}</td>
@@ -1177,6 +1284,7 @@
                         <td style="padding: 5px; mso-number-format:'\\@';">${item.code || '-'}</td>
                         <td style="padding: 5px; text-align: center;">${qtyAwal}</td>
                         <td style="padding: 5px; text-align: center;"><b>${item.qty_in}</b></td>
+                        <td style="padding: 5px; text-align: center; ${styleRevisi}">${qtyRevisiDisplay}</td>
                         <td style="padding: 5px; text-align: center; color: ${isChanged ? 'red' : 'green'};">${perubahanText}</td>
                         <td style="padding: 5px; font-weight: bold;">${status}</td>
                         <td style="padding: 5px; text-align: center;">${kardus}</td>
@@ -1186,6 +1294,35 @@
                     </tr>`;
                 });
             } else if (type === 'penjualan') {
+                
+                // --- Logika untuk merubah rincian menjadi Kolom Tanggal Dinamis ---
+                let bazaarsList = DB.get('bazaars_list');
+                let currentBazaarInfo = bazaarsList.find(b => b.name === targetBazaar);
+                let dateColumns = [];
+                
+                // Ambil rentang tanggal dari info bazaar
+                if (currentBazaarInfo && currentBazaarInfo.start_date && currentBazaarInfo.end_date) {
+                    let curr = new Date(currentBazaarInfo.start_date + "T12:00:00Z");
+                    let end = new Date(currentBazaarInfo.end_date + "T12:00:00Z");
+                    while (curr <= end) {
+                        dateColumns.push(curr.toISOString().split('T')[0]);
+                        curr.setDate(curr.getDate() + 1);
+                    }
+                }
+                
+                // Jika tidak ada info bazaar, lacak otomatis dari riwayat penjualannya
+                if (dateColumns.length === 0) {
+                    let uniqueDates = new Set();
+                    itemsToExport.forEach(item => {
+                        if (item.sales_history) {
+                            item.sales_history.forEach(h => uniqueDates.add(h.date));
+                        }
+                    });
+                    dateColumns = Array.from(uniqueDates).sort();
+                }
+
+                let dateHeaders = dateColumns.map(d => `<th style="padding: 10px;">Tgl ${d}</th>`).join('');
+
                 tableHtml += `
                 <thead style="background-color: #10b981; color: white; font-weight: bold;">
                     <tr>
@@ -1195,19 +1332,24 @@
                         <th style="padding: 10px;">Variant</th>
                         <th style="padding: 10px;">Kode Item</th>
                         <th style="padding: 10px;">Total Dikirim Gudang (Stok Awal)</th>
+                        <th style="padding: 10px;">Revisi Qty Sales</th>
                         <th style="padding: 10px;">Total Laku (Terjual)</th>
                         <th style="padding: 10px;">Sisa Stok Berjalan</th>
-                        <th style="padding: 10px;">Rincian Penjualan (Tgl : Qty)</th>
+                        ${dateHeaders}
                     </tr>
                 </thead><tbody>`;
 
                 itemsToExport.forEach((item, index) => {
-                    let sisa = item.qty_in - item.qty_sold;
-                    let historyStr = "-";
+                    let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
+                    let sisa = actualQty - item.qty_sold;
                     
-                    if (item.sales_history && item.sales_history.length > 0) {
-                        historyStr = item.sales_history.map(h => `• ${h.date} (Laku: ${h.qty} pcs)`).join('<br style="mso-data-placement:same-cell;"/>');
-                    }
+                    let dateCells = dateColumns.map(d => {
+                        let salesOnDate = 0;
+                        if (item.sales_history) {
+                            salesOnDate = item.sales_history.filter(h => h.date === d).reduce((sum, h) => sum + h.qty, 0);
+                        }
+                        return `<td style="padding: 5px; text-align: center;">${salesOnDate > 0 ? salesOnDate : '-'}</td>`;
+                    }).join('');
 
                     tableHtml += `
                     <tr>
@@ -1217,11 +1359,13 @@
                         <td style="padding: 5px;">${item.variant || '-'}</td>
                         <td style="padding: 5px; mso-number-format:'\\@';">${item.code || '-'}</td>
                         <td style="padding: 5px; text-align: center;">${item.qty_in}</td>
+                        <td style="padding: 5px; text-align: center; color:var(--warning);">${item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : '-'}</td>
                         <td style="padding: 5px; text-align: center; color: #10b981;"><b>${item.qty_sold}</b></td>
                         <td style="padding: 5px; text-align: center; color: ${sisa === 0 ? 'red' : 'black'};"><b>${sisa}</b></td>
-                        <td style="padding: 5px;">${historyStr}</td>
+                        ${dateCells}
                     </tr>`;
                 });
+
             } else if (type === 'sokembali') {
                 tableHtml += `
                 <thead style="background-color: #f59e0b; color: white; font-weight: bold;">
@@ -1232,6 +1376,7 @@
                         <th style="padding: 10px;">Variant</th>
                         <th style="padding: 10px;">Kode Item</th>
                         <th style="padding: 10px;">Total Dikirim Gudang</th>
+                        <th style="padding: 10px;">Revisi Qty Sales</th>
                         <th style="padding: 10px;">Total Laku (Terjual)</th>
                         <th style="padding: 10px;">Sisa Sistem Berjalan</th>
                         <th style="padding: 10px;">Fisik Kembali (Opname)</th>
@@ -1241,7 +1386,8 @@
                 </thead><tbody>`;
 
                 itemsToExport.forEach((item, index) => {
-                    let sisa = item.qty_in - item.qty_sold;
+                    let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
+                    let sisa = actualQty - item.qty_sold;
                     let fisik = item.status === 'done' ? item.fisik_kembali : 0;
                     let selisih = item.status === 'done' ? (fisik - sisa) : 0;
                     let statusSO = item.status === 'done' ? 'Selesai Opname' : 'Belum Opname';
@@ -1254,6 +1400,7 @@
                         <td style="padding: 5px;">${item.variant || '-'}</td>
                         <td style="padding: 5px; mso-number-format:'\\@';">${item.code || '-'}</td>
                         <td style="padding: 5px; text-align: center;">${item.qty_in}</td>
+                        <td style="padding: 5px; text-align: center; color:var(--warning);">${item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : '-'}</td>
                         <td style="padding: 5px; text-align: center;">${item.qty_sold}</td>
                         <td style="padding: 5px; text-align: center;"><b>${sisa}</b></td>
                         <td style="padding: 5px; text-align: center; color: blue;"><b>${item.status === 'done' ? fisik : '-'}</b></td>
