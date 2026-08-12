@@ -408,7 +408,11 @@
                 <div class="card tab-content" id="tab-packing">
                     <div class="flex-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap:10px;">
                         <h3 style="margin: 0;">📦 Tugas Persiapan Packing (Gudang)</h3>
-                        <button class="btn-info" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="openScanner('kemas')">📷 Scan Kemas Cepat</button>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                            <button class="btn-info" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="openScanner('kemas')">📷 Scan Kemas Cepat</button>
+                            <button id="btnExportPermintaanKemas" class="btn-primary hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="exportExcel('permintaan')">⬇️ Lap. Permintaan</button>
+                            <button id="btnExportPenjualanKemas" class="btn-success hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="exportExcel('penjualan')">⬇️ Lap. Penjualan</button>
+                        </div>
                     </div>
                     
                     <div class="filter-container">
@@ -427,8 +431,9 @@
                         <h3 id="judulTabelUtama" style="margin: 0;">📊 Stok Berjalan</h3>
                         <div style="display:flex; gap:8px; flex-wrap:wrap;">
                             <button id="btnScanDinamis" class="btn-primary" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="openScanner(currentUser.departemen === 'Sales' ? 'jual' : 'opname')">📷 Scan Aksi Cepat</button>
-                            <button id="btnExportPermintaan" class="btn-info hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="exportExcel('permintaan')">⬇️ Lap. Permintaan</button>
+                            <button id="btnExportPermintaan" class="btn-primary hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="exportExcel('permintaan')">⬇️ Lap. Permintaan</button>
                             <button id="btnExportPenjualan" class="btn-success hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="exportExcel('penjualan')">⬇️ Lap. Penjualan</button>
+                            <button id="btnExportSO" class="btn-warning hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="exportExcel('sokembali')">⬇️ Lap. SO Kembali</button>
                             <button id="btnHapusSemua" class="btn-danger hidden" style="width: auto; padding: 6px 12px; font-size: 0.75rem;" onclick="hapusSemuaBarang()">🗑️ Hapus Semua Data</button>
                         </div>
                     </div>
@@ -445,9 +450,12 @@
                 </div>
 
                 <div class="card tab-content" id="tab-riwayat">
-                    <div class="flex-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <div class="flex-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap:10px;">
                         <h3 style="margin: 0;">✅ Riwayat Opname Selesai</h3>
-                        <button id="btnHapusSemuaRiwayat" class="btn-danger hidden" style="width: auto; padding: 6px 12px; font-size: 0.75rem;" onclick="hapusSemuaRiwayat()">🗑️ Hapus Semua Riwayat</button>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                            <button id="btnExportSORiwayat" class="btn-warning hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="exportExcel('sokembali')">⬇️ Lap. SO Kembali</button>
+                            <button id="btnHapusSemuaRiwayat" class="btn-danger hidden" style="width: auto; padding: 6px 12px; font-size: 0.75rem;" onclick="hapusSemuaRiwayat()">🗑️ Hapus Semua Riwayat</button>
+                        </div>
                     </div>
                     <div class="table-responsive">
                         <table><thead><tr><th>Bazaar</th><th>Brand</th><th>Baju</th><th>Variant</th><th>Code</th><th>Sisa Sistem</th><th>Fisik Kembali</th><th>Selisih</th><th id="thAksiRiwayat" class="hidden">Aksi</th></tr></thead><tbody id="tableBodyOpname"></tbody></table>
@@ -574,7 +582,7 @@
         };
 
         // ==========================================
-        // SCANNER LOGIC (DIPERBARUI: KOTAK RESPONSIF)
+        // SCANNER LOGIC
         // ==========================================
         let html5QrcodeScanner;
         function openScanner(actionType) {
@@ -584,10 +592,9 @@
                 "qr-reader", 
                 { 
                     fps: 15, 
-                    // Membuat kotak responsif: 85% dari lebar layar HP, maksimal 320px
                     qrbox: function(viewfinderWidth, viewfinderHeight) {
                         let boxWidth = Math.min(viewfinderWidth * 0.85, 320);
-                        return { width: boxWidth, height: 150 }; // Tinggi tetap 150px untuk barcode 1D
+                        return { width: boxWidth, height: 150 }; 
                     },
                     rememberLastUsedCamera: true,
                     videoConstraints: {
@@ -626,11 +633,9 @@
         async function handleScanResult(scannedCode, actionType) {
             let items = DB.get('bazaar_items');
             
-            // Cari data berdasarkan barcode yang di-scan dengan data di aplikasi
             let targetIndex = items.findIndex(i => i.code.toLowerCase() === scannedCode.trim().toLowerCase() && (activeBazaarName ? i.bazaar_name === activeBazaarName : true) && i.status === 'active');
             
             if (targetIndex === -1) {
-                // Jika data belum ditambahkan ke daftar permintaan (atau master), muncul peringatan
                 return UI.alert("Tidak Ditemukan", `Kode produk "${scannedCode}" tidak ditemukan pada daftar aktif bazaar ini.\n\nPastikan Sales sudah menambahkan barang ini ke daftar permintaan.`, "error");
             }
 
@@ -973,8 +978,7 @@
             
             let fGB = (document.getElementById('filterGudangBrand')?.value||"").toLowerCase(), fGP = (document.getElementById('filterGudangProduct')?.value||"").toLowerCase();
             let fSB = (document.getElementById('filterSalesBrand')?.value||"").toLowerCase(), fSP = (document.getElementById('filterSalesProduct')?.value||"").toLowerCase();
-            let adaAktif = false; 
-
+            
             items.forEach(item => {
                 if (currentUser.departemen !== 'Superadmin' && activeBazaarName && item.bazaar_name !== activeBazaarName) return;
                 let sisaSistem = item.qty_in - item.qty_sold; let b = item.brand||"-", p = item.product||"-", v = item.variant||"-", c = item.code||"-";
@@ -984,7 +988,6 @@
                 let ketSalesTxt = item.keterangan_sales && item.keterangan_sales !== "-" ? `<br><span style="color:var(--primary); font-size:0.75rem; font-weight:normal;">Ket: ${item.keterangan_sales}</span>` : '';
 
                 if(item.status === 'active') {
-                    adaAktif = true;
                     if (currentUser.departemen === 'Gudang' || currentUser.departemen === 'Superadmin') {
                         if(b.toLowerCase().includes(fGB) && p.toLowerCase().includes(fGP)) {
                             let bdg = st === 'Dikemas' ? '✅ Dikemas' : (st === 'Tidak Dikemas' ? '❌ Kosong' : (st === 'Diterima Sales' ? '👍 Selesai' : '⏳ Menunggu'));
@@ -1012,11 +1015,25 @@
                     hO += `<tr><td>${item.bazaar_name}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${sisaSistem}</td><td align="center">${item.fisik_kembali}</td><td align="center">${sel===0?"✔️":sel}</td>${currentUser.departemen === 'Superadmin' ? `<td><button class="btn-danger" onclick="hapusRiwayat(${item.id})">Hapus</button></td>` : ''}</tr>`;
                 }
             });
-            if(tbSK) tbSK.innerHTML = hSK; if(tbS) tbS.innerHTML = hS; if(tbO) tbO.innerHTML = hO;
-            if(currentUser.departemen !== 'Gudang') { 
+            
+            if(tbSK) tbSK.innerHTML = hSK; 
+            if(tbS) tbS.innerHTML = hS; 
+            if(tbO) tbO.innerHTML = hO;
+            
+            // Menampilkan tombol eksport laporan secara universal
+            document.getElementById('btnExportPermintaanKemas')?.classList.remove('hidden');
+            document.getElementById('btnExportPenjualanKemas')?.classList.remove('hidden');
+            document.getElementById('btnExportPermintaan')?.classList.remove('hidden');
+            document.getElementById('btnExportPenjualan')?.classList.remove('hidden');
+            document.getElementById('btnExportSO')?.classList.remove('hidden');
+            document.getElementById('btnExportSORiwayat')?.classList.remove('hidden');
+
+            // Menyembunyikan opsi "Hapus Semua" khusus jika perannya hanya Gudang biasa
+            if(currentUser.departemen === 'Gudang') { 
+                document.getElementById('btnHapusSemua')?.classList.add('hidden'); 
+                document.getElementById('btnHapusSemuaRiwayat')?.classList.add('hidden'); 
+            } else {
                 document.getElementById('btnHapusSemua')?.classList.remove('hidden'); 
-                document.getElementById('btnExportPermintaan')?.classList.remove('hidden'); 
-                document.getElementById('btnExportPenjualan')?.classList.remove('hidden'); 
             }
         }
 
@@ -1066,31 +1083,31 @@
         }
 
         // ==========================================
-        // FITUR EXPORT LAPORAN EXCEL (DENGAN PILIHAN BAZAAR SUPERADMIN)
+        // FITUR EXPORT LAPORAN EXCEL (DIPERBARUI DENGAN LAPORAN SO)
         // ==========================================
         async function exportExcel(type) {
             let targetBazaar = activeBazaarName;
 
-            // Jika role adalah Superadmin atau activeBazaarName kosong, tampilkan opsi pilihan bazaar
             if (currentUser.departemen === 'Superadmin' || !targetBazaar) {
                 let bazaarsList = DB.get('bazaars_list');
                 let options = bazaarsList.map(b => b.name);
                 
-                // Ambil juga alternatif dari bazaar_items jika ada yang belum terdaftar di bazaars_list
                 let items = DB.get('bazaar_items');
                 items.forEach(i => { if (i.bazaar_name && !options.includes(i.bazaar_name)) options.push(i.bazaar_name); });
 
                 if (options.length === 0) return UI.alert("Kosong", "Belum ada data bazaar yang tersedia di sistem.", "warning");
 
                 let selectedBazaar = await UI.select("Pilih Bazaar", "Silakan pilih bazaar untuk mendownload laporan:", options);
-                if (!selectedBazaar) return; // Dibatalkan oleh user
+                if (!selectedBazaar) return; 
                 targetBazaar = selectedBazaar;
             }
 
-            let items = DB.get('bazaar_items').filter(i => i.bazaar_name === targetBazaar && i.status === 'active');
-            if (items.length === 0) return UI.alert("Kosong", `Tidak ada data aktif untuk bazaar "${targetBazaar}".`, "warning");
+            let allItems = DB.get('bazaar_items').filter(i => i.bazaar_name === targetBazaar);
+            // Untuk laporan SO kembali, ambil semua status. Untuk permintaan/penjualan, hanya ambil yang masih 'active'.
+            let itemsToExport = type === 'sokembali' ? allItems : allItems.filter(i => i.status === 'active');
 
-            // Membuat struktur file Excel dengan CSS Inline agar hasil rapi dan bergaris
+            if (itemsToExport.length === 0) return UI.alert("Kosong", `Tidak ada data untuk bazaar "${targetBazaar}".`, "warning");
+
             let tableHtml = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
             <head>
                 <meta charset="UTF-8">
@@ -1109,11 +1126,10 @@
             </head>
             <body>`;
 
-            // Header untuk memperjelas informasi laporan
-            tableHtml += `<h2 style="font-family: sans-serif;">Laporan ${type === 'permintaan' ? 'Permintaan & Packing Gudang' : 'Penjualan & Stok'}</h2>`;
+            let titleJudul = type === 'permintaan' ? 'Permintaan & Packing Gudang' : (type === 'penjualan' ? 'Penjualan & Stok' : 'Opname SO Kembali');
+            tableHtml += `<h2 style="font-family: sans-serif;">Laporan ${titleJudul}</h2>`;
             tableHtml += `<p style="font-family: sans-serif;"><b>Bazaar/Event:</b> ${targetBazaar}<br><b>Waktu Download:</b> ${new Date().toLocaleString('id-ID')}</p>`;
             
-            // Mulai Tabel
             tableHtml += `<table border="1" style="border-collapse: collapse; font-family: sans-serif; font-size: 12px; width: 100%;">`;
 
             if (type === 'permintaan') {
@@ -1136,7 +1152,7 @@
                     </tr>
                 </thead><tbody>`;
 
-                items.forEach((item, index) => {
+                itemsToExport.forEach((item, index) => {
                     let qtyAwal = item.original_qty || item.qty_in;
                     let status = item.status_pengiriman || "Belum di packing";
                     
@@ -1185,7 +1201,7 @@
                     </tr>
                 </thead><tbody>`;
 
-                items.forEach((item, index) => {
+                itemsToExport.forEach((item, index) => {
                     let sisa = item.qty_in - item.qty_sold;
                     let historyStr = "-";
                     
@@ -1204,6 +1220,45 @@
                         <td style="padding: 5px; text-align: center; color: #10b981;"><b>${item.qty_sold}</b></td>
                         <td style="padding: 5px; text-align: center; color: ${sisa === 0 ? 'red' : 'black'};"><b>${sisa}</b></td>
                         <td style="padding: 5px;">${historyStr}</td>
+                    </tr>`;
+                });
+            } else if (type === 'sokembali') {
+                tableHtml += `
+                <thead style="background-color: #f59e0b; color: white; font-weight: bold;">
+                    <tr>
+                        <th style="padding: 10px;">No</th>
+                        <th style="padding: 10px;">Brand</th>
+                        <th style="padding: 10px;">Produk (Baju)</th>
+                        <th style="padding: 10px;">Variant</th>
+                        <th style="padding: 10px;">Kode Item</th>
+                        <th style="padding: 10px;">Total Dikirim Gudang</th>
+                        <th style="padding: 10px;">Total Laku (Terjual)</th>
+                        <th style="padding: 10px;">Sisa Sistem Berjalan</th>
+                        <th style="padding: 10px;">Fisik Kembali (Opname)</th>
+                        <th style="padding: 10px;">Selisih Opname</th>
+                        <th style="padding: 10px;">Status SO</th>
+                    </tr>
+                </thead><tbody>`;
+
+                itemsToExport.forEach((item, index) => {
+                    let sisa = item.qty_in - item.qty_sold;
+                    let fisik = item.status === 'done' ? item.fisik_kembali : 0;
+                    let selisih = item.status === 'done' ? (fisik - sisa) : 0;
+                    let statusSO = item.status === 'done' ? 'Selesai Opname' : 'Belum Opname';
+
+                    tableHtml += `
+                    <tr>
+                        <td style="padding: 5px; text-align: center;">${index + 1}</td>
+                        <td style="padding: 5px;">${item.brand || '-'}</td>
+                        <td style="padding: 5px;">${item.product || '-'}</td>
+                        <td style="padding: 5px;">${item.variant || '-'}</td>
+                        <td style="padding: 5px; mso-number-format:'\\@';">${item.code || '-'}</td>
+                        <td style="padding: 5px; text-align: center;">${item.qty_in}</td>
+                        <td style="padding: 5px; text-align: center;">${item.qty_sold}</td>
+                        <td style="padding: 5px; text-align: center;"><b>${sisa}</b></td>
+                        <td style="padding: 5px; text-align: center; color: blue;"><b>${item.status === 'done' ? fisik : '-'}</b></td>
+                        <td style="padding: 5px; text-align: center; color: ${selisih < 0 ? 'red' : (selisih > 0 ? 'green' : 'black')};"><b>${item.status === 'done' ? selisih : '-'}</b></td>
+                        <td style="padding: 5px; font-weight: bold; color: ${item.status === 'done' ? 'green' : 'orange'};">${statusSO}</td>
                     </tr>`;
                 });
             }
