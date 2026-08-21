@@ -335,16 +335,49 @@
 
                 <div id="tabNav" class="tabs-container"></div>
 
+                <!-- TAB MASTER DATA (SUPERADMIN) -->
                 <div class="card tab-content" id="tab-master">
                     <h3>👑 Master Data Inventory</h3>
                     <div id="masterInventoryStatus" style="margin-bottom: 15px; font-weight: 600; padding: 10px; background: #e0f2fe; color: #0369a1; border-radius: 6px; display: inline-block;"></div>
-                    <div class="form-group" style="max-width: 400px; margin-top:10px;"><label>Pilih File Excel/CSV Data Master:</label><input type="file" id="fileUploadMaster" accept=".csv"></div>
-                    <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;">
-                        <button class="btn-success" style="width: auto;" onclick="prosesUploadCSV()">☁️ Upload & Proses</button>
-                        <button class="btn-secondary" style="font-size: 0.75rem; width: auto;" onclick="downloadTemplateMaster()">⬇️ Template Master</button>
-                        <button class="btn-danger" style="width: auto;" onclick="hapusDataMaster()">🗑️ Kosongkan Master</button>
+                    
+                    <div class="grid-2" style="margin-bottom: 20px;">
+                        <!-- FORM TAMBAH MANUAL -->
+                        <div style="background: #f8fafc; padding: 15px; border-radius: 10px; border: 1px solid var(--border);">
+                            <h4 style="margin-bottom: 10px; color: var(--primary);">➕ Tambah / Update Manual</h4>
+                            <div class="grid-2" style="gap:10px;">
+                                <div class="form-group" style="margin-bottom:5px;"><label>Brand</label><input type="text" id="masBrand" placeholder="Brand"></div>
+                                <div class="form-group" style="margin-bottom:5px;"><label>Baju / Produk</label><input type="text" id="masProduct" placeholder="Nama Baju"></div>
+                                <div class="form-group" style="margin-bottom:5px;"><label>Variant</label><input type="text" id="masVariant" placeholder="Warna/Size"></div>
+                                <div class="form-group" style="margin-bottom:5px;"><label>Code (Unik)</label><input type="text" id="masCode" placeholder="Kode Barcode"></div>
+                                <div class="form-group" style="margin-bottom:5px; grid-column: span 2;"><label>Collection</label><input type="text" id="masCollection" placeholder="Koleksi"></div>
+                            </div>
+                            <label style="margin-top:10px; display:block;">Stok Awal per Channel:</label>
+                            <div style="display:flex; gap:5px; flex-wrap:wrap; margin-bottom:15px;">
+                                <input type="number" id="masBTK" placeholder="BTK" style="width:60px;" min="0">
+                                <input type="number" id="masGU" placeholder="GU" style="width:60px;" min="0">
+                                <input type="number" id="masGREC" placeholder="GREC" style="width:60px;" min="0">
+                                <input type="number" id="masGTOK" placeholder="GTOK" style="width:60px;" min="0">
+                                <input type="number" id="masGWEB" placeholder="GWEB" style="width:60px;" min="0">
+                            </div>
+                            <button class="btn-primary" onclick="tambahMasterManual()" style="width:100%;">Simpan Data Master</button>
+                        </div>
+                        
+                        <!-- UPLOAD CSV -->
+                        <div style="background: #f8fafc; padding: 15px; border-radius: 10px; border: 1px solid var(--border);">
+                            <h4 style="margin-bottom: 10px; color: var(--primary);">☁️ Tambah / Update via CSV</h4>
+                            <p class="info-text">Upload CSV. Jika kode sudah ada, data akan di-update (ditimpa). Jika kode baru, akan ditambahkan ke master.</p>
+                            <div class="form-group"><input type="file" id="fileUploadMaster" accept=".csv"></div>
+                            <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;">
+                                <button class="btn-success" style="width: auto;" onclick="prosesUploadCSV()">Upload & Proses</button>
+                                <button class="btn-secondary" style="font-size: 0.75rem; width: auto;" onclick="downloadTemplateMaster()">⬇️ Template Master</button>
+                            </div>
+                            <div id="uploadStatusAdmin" style="margin-top: 10px; font-size: 0.9rem;"></div>
+                            
+                            <hr style="border:0; border-top:1px solid #ccc; margin:15px 0;">
+                            <button class="btn-danger" style="width: 100%;" onclick="hapusDataMaster()">🗑️ Kosongkan Seluruh Master Data</button>
+                        </div>
                     </div>
-                    <div id="uploadStatusAdmin" style="margin-top: 10px; font-size: 0.9rem;"></div>
+
                     <div class="table-responsive" style="margin-top: 20px; max-height: 400px; overflow-y: auto;">
                         <table>
                             <thead><tr><th>Brand</th><th>Baju</th><th>Variant</th><th>Code</th><th>Collection</th><th>BTK</th><th>GU</th><th>GREC</th><th>GTOK</th><th>GWEB</th><th style="background-color: var(--success); color: white;">TOTAL</th></tr></thead>
@@ -442,7 +475,6 @@
                         <span style="font-weight: 600; font-size: 0.85rem;">🔍 Filter:</span>
                         <select id="filterSalesBrand" class="filter-select" onchange="renderTablesBazaar()"></select>
                         <select id="filterSalesProduct" class="filter-select" onchange="renderTablesBazaar()"></select>
-                        <!-- FILTER BARU UNTUK KARDUS (SALES) -->
                         <select id="filterSalesKardus" class="filter-select" onchange="renderTablesBazaar()"></select>
                     </div>
                     
@@ -1058,7 +1090,6 @@
             let conf = await UI.confirm("Batal / Edit Display", "Yakin ingin membatalkan permintaan Display ini?\n\n(Catatan: Jika ingin mengedit jumlah, batalkan permintaan ini terlebih dahulu lalu buat ulang permintaannya.)", "warning", "Ya, Batalkan", "Tutup");
             if(!conf) return;
 
-            // Jika sebelumnya menambahkan stok baru, maka kembalikan ke master inventory
             if (item.display_req_type === 'tambahan') {
                 let mIdx = inv.findIndex(m => m.code === item.code);
                 if (mIdx !== -1) inv[mIdx].total += item.display_req_qty;
@@ -1066,7 +1097,6 @@
                 item.qty_in -= item.display_req_qty;
             }
 
-            // Bersihkan teks catatan
             if (item.keterangan_sales) {
                 let noteToRemove = `[KARDUS DISPLAY: ${item.display_req_qty} pcs]`;
                 item.keterangan_sales = item.keterangan_sales.replace(noteToRemove, '').trim();
@@ -1262,19 +1292,87 @@
             if(tbodyB) tbodyB.innerHTML = bazaars.map(b => `<tr><td>${b.name}</td><td>${b.start_date}</td><td><button class="btn-danger" onclick="hapusBazaarAdmin('${b.name}')">Hapus</button></td></tr>`).join('');
         }
         async function hapusUser(idx, username) { let conf = await UI.confirm("Hapus?", `Hapus ${username}?`, "warning"); if(conf) { let users = DB.get('users'); users.splice(idx, 1); await DB.set('users', users); } }
+        
+        async function tambahMasterManual() {
+            let brand = document.getElementById('masBrand').value.trim();
+            let product = document.getElementById('masProduct').value.trim();
+            let variant = document.getElementById('masVariant').value.trim();
+            let code = document.getElementById('masCode').value.trim();
+            let collection = document.getElementById('masCollection').value.trim();
+            
+            let btk = parseInt(document.getElementById('masBTK').value) || 0;
+            let gu = parseInt(document.getElementById('masGU').value) || 0;
+            let grec = parseInt(document.getElementById('masGREC').value) || 0;
+            let gtok = parseInt(document.getElementById('masGTOK').value) || 0;
+            let gweb = parseInt(document.getElementById('masGWEB').value) || 0;
+            
+            if (!code || !product) return UI.alert("Error", "Kode Unik (Code) dan Nama Produk wajib diisi!", "error");
+            
+            let currentInv = DB.get('master_inventory');
+            let total = btk + gu + grec + gtok + gweb;
+            let newData = { brand, product, variant, code, collection, btk, gu, grec, gtok, gweb, total };
+            
+            let existingIdx = currentInv.findIndex(item => item.code.toLowerCase() === code.toLowerCase());
+            if (existingIdx !== -1) {
+                let conf = await UI.confirm("Update Data", `Kode barang ${code} sudah ada di master. Yakin ingin menimpa (update) datanya menjadi yang baru?`, "warning");
+                if (!conf) return;
+                currentInv[existingIdx] = newData;
+            } else {
+                currentInv.push(newData);
+            }
+            
+            await DB.set('master_inventory', currentInv); 
+            localStorage.setItem('master_inventory_date', new Date().toLocaleString());
+            UI.alert("Sukses", "Data berhasil disimpan ke Master Inventory.", "success");
+            
+            // Bersihkan form
+            document.getElementById('masBrand').value = ''; document.getElementById('masProduct').value = '';
+            document.getElementById('masVariant').value = ''; document.getElementById('masCode').value = '';
+            document.getElementById('masCollection').value = ''; document.getElementById('masBTK').value = '';
+            document.getElementById('masGU').value = ''; document.getElementById('masGREC').value = '';
+            document.getElementById('masGTOK').value = ''; document.getElementById('masGWEB').value = '';
+        }
+
         async function prosesUploadCSV() {
             let fileInput = document.getElementById('fileUploadMaster'); if(!fileInput.files.length) return UI.alert("Kosong", "Pilih CSV", "warning");
             document.getElementById('uploadStatusAdmin').innerHTML = `<span style="color:var(--warning);">⏳ Sedang memproses...</span>`;
             let reader = new FileReader();
             reader.onload = async function(e) {
-                let lines = parseCSV(e.target.result); let newInv = [];
+                let lines = parseCSV(e.target.result); 
+                let currentInv = DB.get('master_inventory');
+                
                 for(let i=1; i<lines.length; i++) {
-                    let c = lines[i]; if(c.length >= 10) newInv.push({ brand: (c[0]||'').trim(), product: (c[1]||'').trim(), variant: (c[2]||'').trim(), code: (c[3]||'').trim(), collection: (c[4]||'').trim(), btk: parseInt(c[5])||0, gu: parseInt(c[6])||0, grec: parseInt(c[7])||0, gtok: parseInt(c[8])||0, gweb: parseInt(c[9])||0, total: (parseInt(c[5])||0)+(parseInt(c[6])||0)+(parseInt(c[7])||0)+(parseInt(c[8])||0)+(parseInt(c[9])||0) });
+                    let c = lines[i]; 
+                    if(c.length >= 10) {
+                        let code = (c[3]||'').trim();
+                        if(!code) continue;
+
+                        let btk = parseInt(c[5])||0, gu = parseInt(c[6])||0, grec = parseInt(c[7])||0, gtok = parseInt(c[8])||0, gweb = parseInt(c[9])||0;
+                        let total = btk + gu + grec + gtok + gweb;
+                        
+                        let newData = { 
+                            brand: (c[0]||'').trim(), product: (c[1]||'').trim(), variant: (c[2]||'').trim(), 
+                            code: code, collection: (c[4]||'').trim(), 
+                            btk: btk, gu: gu, grec: grec, gtok: gtok, gweb: gweb, total: total 
+                        };
+
+                        let existingIdx = currentInv.findIndex(item => item.code === code);
+                        if (existingIdx !== -1) {
+                            currentInv[existingIdx] = newData;
+                        } else {
+                            currentInv.push(newData);
+                        }
+                    }
                 }
-                await DB.set('master_inventory', newInv); localStorage.setItem('master_inventory_date', new Date().toLocaleString()); await UI.alert("Sukses", "Master diupload", "success"); fileInput.value = ''; document.getElementById('uploadStatusAdmin').innerHTML = '';
-            }; reader.readAsText(fileInput.files[0]);
+                await DB.set('master_inventory', currentInv); 
+                localStorage.setItem('master_inventory_date', new Date().toLocaleString()); 
+                await UI.alert("Sukses", "Data Master berhasil di-update dari CSV.", "success"); 
+                fileInput.value = ''; 
+                document.getElementById('uploadStatusAdmin').innerHTML = '';
+            }; 
+            reader.readAsText(fileInput.files[0]);
         }
-        async function hapusDataMaster() { let conf = await UI.confirm("Hapus Semua", "Yakin kosongkan master?", "error"); if(conf) { await DB.set('master_inventory', []); } }
+        async function hapusDataMaster() { let conf = await UI.confirm("Hapus Semua", "Yakin kosongkan SELURUH DATA master?", "error"); if(conf) { await DB.set('master_inventory', []); } }
         function renderMasterDateStatus() {
             let inv = DB.get('master_inventory'); let date = localStorage.getItem('master_inventory_date'); let statEl = document.getElementById('masterInventoryStatus'); let tbody = document.getElementById('tableBodyMasterPreview');
             if(statEl) statEl.innerHTML = inv.length > 0 ? `✅ <strong>${inv.length}</strong> data (${date})` : `❌ Belum ada Master Data`;
