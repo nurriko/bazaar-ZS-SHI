@@ -425,11 +425,25 @@
                     <div id="uploadPreviewSection" class="hidden" style="margin-top: 20px;">
                         <div id="invalidPreviewContainer" class="preview-invalid-box hidden">
                             <h4 style="color: var(--danger); margin-top: 0;">⚠️ Melampaui Stok Gudang!</h4>
-                            <div class="table-scrollable"><table style="margin: 0; box-shadow: none;"><thead style="background-color: var(--danger); color: white;"><tr><th style="background: transparent;">Brand</th><th style="background: transparent;">Baju</th><th style="background: transparent;">Variant</th><th style="background: transparent;">Code</th><th style="background: transparent;">Sisa Master</th><th style="background: transparent;">Ubah Qty</th><th style="background: transparent;">Aksi</th></tr></thead><tbody id="previewInvalidBody"></tbody></table></div>
+                            <div class="table-scrollable">
+                                <table style="margin: 0; box-shadow: none;">
+                                    <thead style="background-color: var(--danger); color: white;">
+                                        <tr><th style="background: transparent;">Brand</th><th style="background: transparent;">Baju</th><th style="background: transparent;">Variant</th><th style="background: transparent;">Code</th><th style="background: transparent;">Keterangan</th><th style="background: transparent;">Sisa Master</th><th style="background: transparent;">Ubah Qty</th><th style="background: transparent;">Aksi</th></tr>
+                                    </thead>
+                                    <tbody id="previewInvalidBody"></tbody>
+                                </table>
+                            </div>
                         </div>
                         <div id="validPreviewContainer" class="preview-box">
                             <h4 style="color: var(--primary); margin-top: 0;">✅ Valid (Siap Kirim ke Gudang)</h4>
-                            <div class="table-scrollable"><table style="margin: 0; box-shadow: none;"><thead style="position: sticky; top: 0; z-index: 10;"><tr><th>Brand</th><th>Baju</th><th>Variant</th><th>Code</th><th>Qty Diminta</th></tr></thead><tbody id="previewValidBody"></tbody></table></div>
+                            <div class="table-scrollable">
+                                <table style="margin: 0; box-shadow: none;">
+                                    <thead style="position: sticky; top: 0; z-index: 10;">
+                                        <tr><th>Brand</th><th>Baju</th><th>Variant</th><th>Code</th><th>Keterangan</th><th>Qty Diminta</th></tr>
+                                    </thead>
+                                    <tbody id="previewValidBody"></tbody>
+                                </table>
+                            </div>
                         </div>
                         <div style="margin-top: 15px; text-align: right; display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap;">
                             <button class="btn-secondary" style="width: auto;" onclick="batalUploadBawaan()">Batal</button>
@@ -840,37 +854,104 @@
 
         // CSV SALES PARSE
         function parseCSV(str) { let delimiter = str.includes(';') ? ';' : ','; let arr = []; let quote = false; for (let row = 0, col = 0, c = 0; c < str.length; c++) { let cc = str[c], nc = str[c+1]; arr[row] = arr[row] || []; arr[row][col] = arr[row][col] || ''; if (cc === '"' && quote && nc === '"') { arr[row][col] += cc; ++c; continue; } if (cc === '"') { quote = !quote; continue; } if (cc === delimiter && !quote) { ++col; continue; } if (cc === '\r' && nc === '\n' && !quote) { ++row; col = 0; ++c; continue; } if (cc === '\n' && !quote) { ++row; col = 0; continue; } if (cc === '\r' && !quote) { ++row; col = 0; continue; } arr[row][col] += cc; } return arr; }
-        function downloadTemplateBawaan() { let csv = "Brand,Product,Variant,Code,Collection,Qty_Dibawa\nZaskia Sungkar,Gamis Flowy,Hitam,ZS-001,Lebaran 2026,10"; let link = document.createElement("a"); link.setAttribute("href", encodeURI("data:text/csv;charset=utf-8," + csv)); link.setAttribute("download", "Template_Rencana_Sales.csv"); document.body.appendChild(link); link.click(); document.body.removeChild(link); }
+        
+        function downloadTemplateBawaan() { 
+            let csv = "Brand,Product,Variant,Code,Collection,Qty_Dibawa,Keterangan_Sales\nZaskia Sungkar,Gamis Flowy,Hitam,ZS-001,Lebaran 2026,10,Display Atas\nShi By Shireen,Blouse Serut,Putih,SHI-002,Lebaran 2026,5,"; 
+            let link = document.createElement("a"); link.setAttribute("href", encodeURI("data:text/csv;charset=utf-8," + csv)); link.setAttribute("download", "Template_Rencana_Sales.csv"); document.body.appendChild(link); link.click(); document.body.removeChild(link); 
+        }
+        
         function downloadTemplateMaster() { let csv = "Brand,Product,Variant,Code,Collection,BTK,GU,GREC,GTOK,GWEB\nZaskia Sungkar,Gamis Flowy,Hitam,ZS-001,Lebaran 2026,10,5,5,10,20"; let link = document.createElement("a"); link.setAttribute("href", encodeURI("data:text/csv;charset=utf-8," + csv)); link.setAttribute("download", "Template_Master_Inventory.csv"); document.body.appendChild(link); link.click(); document.body.removeChild(link); }
         
         async function uploadDataBawaan() {
             let fileInput = document.getElementById('fileBawaan'); if(!fileInput.files.length) return UI.alert("File Kosong", "Pilih CSV", "warning");
             let reader = new FileReader(); reader.onload = async function(e) {
                 let lines = parseCSV(e.target.result); let inv = DB.get('master_inventory'); let csvDataMap = {}; let errorMsgs = [];
-                for(let i=1; i<lines.length; i++) { let cols = lines[i]; if(cols.length >= 6) { let originalCode = (cols[3]||'').replace(/(^"|"$)/g, '').trim(); let searchCode = originalCode.toLowerCase(); let qty = parseInt((cols[5]||'').replace(/(^"|"$)/g, '').trim()); if(isNaN(qty) || qty <= 0) continue; if(!csvDataMap[searchCode]) csvDataMap[searchCode] = { brand: (cols[0]||'').trim(), product: (cols[1]||'').trim(), variant: (cols[2]||'').trim(), collection: (cols[4]||'').trim(), originalCode, qty }; else csvDataMap[searchCode].qty += qty; } }
+                for(let i=1; i<lines.length; i++) { 
+                    let cols = lines[i]; 
+                    if(cols.length >= 6) { 
+                        let originalCode = (cols[3]||'').replace(/(^"|"$)/g, '').trim(); 
+                        let searchCode = originalCode.toLowerCase(); 
+                        let qty = parseInt((cols[5]||'').replace(/(^"|"$)/g, '').trim()); 
+                        let ketSales = cols.length >= 7 ? (cols[6]||'').replace(/(^"|"$)/g, '').trim() : '-'; // FITUR KOLOM KETERANGAN
+                        
+                        if(isNaN(qty) || qty <= 0) continue; 
+                        
+                        if(!csvDataMap[searchCode]) {
+                            csvDataMap[searchCode] = { brand: (cols[0]||'').trim(), product: (cols[1]||'').trim(), variant: (cols[2]||'').trim(), collection: (cols[4]||'').trim(), originalCode, qty, ketSales }; 
+                        } else { 
+                            csvDataMap[searchCode].qty += qty; 
+                            if (ketSales && ketSales !== '-') {
+                                csvDataMap[searchCode].ketSales = csvDataMap[searchCode].ketSales === '-' ? ketSales : csvDataMap[searchCode].ketSales + " | " + ketSales;
+                            }
+                        } 
+                    } 
+                }
                 pendingUploadData = [];
-                for(let k in csvDataMap) { let item = csvDataMap[k]; let invIdx = inv.findIndex(i => i.code.toLowerCase() === k); if(invIdx !== -1) pendingUploadData.push({ invIdx: invIdx, brand: item.brand, product: item.product, variant: item.variant, code: item.originalCode, collection: item.collection, qty: item.qty, maxStock: inv[invIdx].total, isValid: item.qty <= inv[invIdx].total }); else errorMsgs.push(`Code "${item.originalCode}" tidak ditemukan.`); }
-                if(pendingUploadData.length === 0) return UI.alert("Gagal", "Tidak ada data valid.", "error"); if(errorMsgs.length > 0) await UI.alert("Warning", "Beberapa kode dilewati karena tidak ada di Master.", "warning"); renderUploadPreview();
+                for(let k in csvDataMap) { 
+                    let item = csvDataMap[k]; 
+                    let invIdx = inv.findIndex(i => i.code.toLowerCase() === k); 
+                    if(invIdx !== -1) pendingUploadData.push({ invIdx: invIdx, brand: item.brand, product: item.product, variant: item.variant, code: item.originalCode, collection: item.collection, qty: item.qty, ketSales: item.ketSales, maxStock: inv[invIdx].total, isValid: item.qty <= inv[invIdx].total }); 
+                    else errorMsgs.push(`Code "${item.originalCode}" tidak ditemukan.`); 
+                }
+                if(pendingUploadData.length === 0) return UI.alert("Gagal", "Tidak ada data valid.", "error"); 
+                if(errorMsgs.length > 0) await UI.alert("Warning", "Beberapa kode dilewati karena tidak ada di Master.", "warning"); 
+                renderUploadPreview();
             }; reader.readAsText(fileInput.files[0]);
         }
+        
         function renderUploadPreview() {
             document.getElementById('uploadPreviewSection').classList.remove('hidden');
             let tV = document.getElementById('previewValidBody'); let tI = document.getElementById('previewInvalidBody'); let btn = document.getElementById('btnFinalSimpan');
             tV.innerHTML = ''; tI.innerHTML = ''; let invCount = 0;
-            pendingUploadData.forEach((item, idx) => { if(item.isValid) tV.innerHTML += `<tr><td>${item.brand}</td><td>${item.product}</td><td>${item.variant}</td><td><code>${item.code}</code></td><td><strong>${item.qty}</strong></td></tr>`; else { invCount++; tI.innerHTML += `<tr><td>${item.brand}</td><td>${item.product}</td><td>${item.variant}</td><td><code>${item.code}</code></td><td><strong>${item.maxStock}</strong></td><td><input type="number" id="editQty_${idx}" value="${item.qty}" style="width: 70px;"></td><td><button class="btn-success" onclick="simpanEditPending(${idx})">Simpan</button><button class="btn-secondary" onclick="hapusPendingItem(${idx})">Hapus</button></td></tr>`; } });
+            pendingUploadData.forEach((item, idx) => { 
+                let k = item.ketSales || '-';
+                if(item.isValid) {
+                    tV.innerHTML += `<tr><td>${item.brand}</td><td>${item.product}</td><td>${item.variant}</td><td><code>${item.code}</code></td><td>${k}</td><td><strong>${item.qty}</strong></td></tr>`; 
+                } else { 
+                    invCount++; 
+                    tI.innerHTML += `<tr><td>${item.brand}</td><td>${item.product}</td><td>${item.variant}</td><td><code>${item.code}</code></td><td>${k}</td><td><strong>${item.maxStock}</strong></td><td><input type="number" id="editQty_${idx}" value="${item.qty}" style="width: 70px;"></td><td><button class="btn-success" onclick="simpanEditPending(${idx})">Simpan</button><button class="btn-secondary" onclick="hapusPendingItem(${idx})">Hapus</button></td></tr>`; 
+                } 
+            });
             if(invCount === 0) { document.getElementById('invalidPreviewContainer').classList.add('hidden'); btn.disabled = false; btn.innerText = "Kirim Permintaan 🚀"; } else { document.getElementById('invalidPreviewContainer').classList.remove('hidden'); btn.disabled = true; btn.innerText = "Selesaikan Peringatan"; }
         }
+        
         async function simpanEditPending(idx) { let item = pendingUploadData[idx]; let nQ = parseInt(document.getElementById(`editQty_${idx}`).value); if(isNaN(nQ) || nQ <= 0 || nQ > item.maxStock) return UI.alert("Salah", "Cek sisa master.", "error"); item.qty = nQ; item.isValid = true; renderUploadPreview(); }
         async function hapusPendingItem(idx) { pendingUploadData.splice(idx, 1); renderUploadPreview(); }
+        
         async function konfirmasiUploadBawaan() {
             if(pendingUploadData.some(i => !i.isValid)) return;
             let inv = DB.get('master_inventory'); let items = DB.get('bazaar_items');
+            
             pendingUploadData.forEach(d => {
                 let existingIdx = items.findIndex(i => i.code === d.code && i.bazaar_name === activeBazaarName && i.status === 'active');
-                if (existingIdx !== -1) { items[existingIdx].original_qty += d.qty; items[existingIdx].qty_in += d.qty; items[existingIdx].status_pengiriman = 'Menunggu Refill Gudang'; items[existingIdx].req_date = new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}); } 
-                else { items.push({ id: Date.now() + Math.random(), bazaar_name: activeBazaarName, brand: d.brand, product: d.product, variant: d.variant, code: d.code, collection: d.collection, original_qty: d.qty, qty_in: d.qty, qty_sold: 0, status: 'active', fisik_kembali: 0, status_pengiriman: 'Menunggu Gudang', keterangan_gudang: '-', req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}) }); }
+                let finalKet = d.ketSales || "-";
+                let isDisplay = finalKet.toLowerCase().includes('display');
+
+                if (existingIdx !== -1) { 
+                    items[existingIdx].original_qty += d.qty; 
+                    items[existingIdx].qty_in += d.qty; 
+                    items[existingIdx].status_pengiriman = 'Menunggu Refill Gudang'; 
+                    items[existingIdx].req_date = new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}); 
+                    
+                    let prevNote = (items[existingIdx].keterangan_sales && items[existingIdx].keterangan_sales !== "-") ? items[existingIdx].keterangan_sales + " | " : "";
+                    items[existingIdx].keterangan_sales = finalKet !== "-" ? prevNote + finalKet : (items[existingIdx].keterangan_sales || "-");
+                    
+                    if(isDisplay) {
+                        items[existingIdx].display_req_qty = (items[existingIdx].display_req_qty || 0) + d.qty;
+                        items[existingIdx].display_req_type = 'tambahan';
+                    }
+                } 
+                else { 
+                    items.push({ 
+                        id: Date.now() + Math.random(), bazaar_name: activeBazaarName, brand: d.brand, product: d.product, variant: d.variant, code: d.code, collection: d.collection, original_qty: d.qty, qty_in: d.qty, qty_sold: 0, status: 'active', fisik_kembali: 0, status_pengiriman: 'Menunggu Gudang', keterangan_gudang: '-', req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}), 
+                        keterangan_sales: finalKet,
+                        display_req_qty: isDisplay ? d.qty : 0,
+                        display_req_type: isDisplay ? 'tambahan' : null
+                    }); 
+                }
                 inv[d.invIdx].total -= d.qty; 
             });
+            
             await DB.set('master_inventory', inv); await DB.set('bazaar_items', items);
             await UI.alert("Sukses", "Data dikirim ke Gudang.", "success");
             batalUploadBawaan(); openTab('tab-stok'); 
