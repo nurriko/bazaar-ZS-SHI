@@ -160,7 +160,7 @@
 <body>
     <div id="dbLoading">
         <h2 style="color:var(--primary); margin-bottom:10px;">Menghubungkan ke Sistem...</h2>
-        <p class="info-text">Sinkronisasi Database Cloud Offline-First</p>
+        <p class="info-text">Sinkronisasi Database Cloud Terenkripsi</p>
     </div>
 
     <!-- UI ALERT & PROMPT MODAL -->
@@ -524,6 +524,9 @@
             bazaars_list: [],
             master_inventory_date: localStorage.getItem('master_inventory_date') || ''
         };
+        
+        let loadedCollectionsCount = 0; // PENAMBAHAN: Variabel tracker anti race-condition
+        const totalCollectionsToLoad = 4;
 
         const DB = {
             get: function(colName) { return window.appState[colName] || []; },
@@ -536,23 +539,50 @@
 
         window.addEventListener('firebase-ready', () => {
             const collections = ['users', 'master_inventory', 'bazaar_items', 'bazaars_list'];
+            
             collections.forEach(col => {
                 window.onSnapshot(window.doc(window.db, "appData", col), (docSnap) => {
-                    if (docSnap.exists()) window.appState[col] = docSnap.data().items || [];
-                    else { window.appState[col] = []; if (col === 'users') DB.set('users', [{ username: 'admin', password: 'admin', departemen: 'Superadmin' }]); }
+                    let fetchedItems = [];
+                    if (docSnap.exists()) {
+                        fetchedItems = docSnap.data().items || [];
+                    }
+                    
+                    // PERBAIKAN: Proteksi kuat agar array users TIDAK PERNAH kosong di Firebase
+                    if (col === 'users' && fetchedItems.length === 0) {
+                        fetchedItems = [{ username: 'admin', password: 'admin', departemen: 'Superadmin' }];
+                        DB.set('users', fetchedItems); // Auto restore data default superadmin
+                    }
+                    
+                    window.appState[col] = fetchedItems;
+                    
+                    // PERBAIKAN: Verifikasi unduhan data sepenuhnya (Bukan timeout sembarangan)
+                    if (loadedCollectionsCount < totalCollectionsToLoad) {
+                        loadedCollectionsCount++;
+                        if (loadedCollectionsCount === totalCollectionsToLoad) {
+                            document.getElementById('dbLoading').classList.add('hidden'); 
+                            let savedUser = sessionStorage.getItem('loggedInUser');
+                            
+                            // PERBAIKAN: Ghost login validation
+                            if(savedUser && window.appState['users']) {
+                                let parsedUser = JSON.parse(savedUser);
+                                let isUserStillExists = window.appState['users'].find(u => u.username === parsedUser.username && u.password === parsedUser.password);
+                                
+                                if(isUserStillExists) {
+                                    currentUser = parsedUser;
+                                    showDashboard();
+                                } else {
+                                    sessionStorage.removeItem('loggedInUser');
+                                    showLogin();
+                                }
+                            } else {
+                                showLogin();
+                            }
+                        }
+                    }
+                    
                     refreshUI(); 
                 });
             });
-            setTimeout(() => { 
-                document.getElementById('dbLoading').classList.add('hidden'); 
-                let savedUser = sessionStorage.getItem('loggedInUser');
-                if(savedUser) {
-                    currentUser = JSON.parse(savedUser);
-                    showDashboard();
-                } else {
-                    showLogin();
-                }
-            }, 1000);
         });
 
         if ('serviceWorker' in navigator) {
@@ -716,6 +746,7 @@
         function showRegister() { document.getElementById('loginSection').classList.add('hidden'); document.getElementById('registerSection').classList.remove('hidden'); }
 
         async function login() {
+            if (loadedCollectionsCount < totalCollectionsToLoad) return UI.alert("Loading", "Sistem sedang mengunduh data dari cloud, harap tunggu...", "warning");
             let user = document.getElementById('loginUser').value.trim(); let pass = document.getElementById('loginPass').value; let users = DB.get('users');
             let validUser = users.find(u => u.username.toLowerCase() === user.toLowerCase() && u.password === pass);
             if(validUser) { 
@@ -726,12 +757,14 @@
             } else { await UI.alert("Gagal", "Username/Password salah.", "error"); }
         }
         async function register() {
+            if (loadedCollectionsCount < totalCollectionsToLoad) return UI.alert("Loading", "Sistem sedang mengunduh data dari cloud, harap tunggu...", "warning");
             let user = document.getElementById('regUser').value.trim(); let pass = document.getElementById('regPass').value; let dept = document.getElementById('regDept').value;
             if(!user || !pass) return UI.alert("Peringatan", "Wajib diisi!", "warning");
             let users = DB.get('users'); if(users.find(u => u.username.toLowerCase() === user.toLowerCase())) return UI.alert("Gagal", "Username ada.", "error");
             users.push({ username: user, password: pass, departemen: dept }); await DB.set('users', users); await UI.alert("Berhasil", "Silakan login.", "success"); showLogin();
         }
         async function lupaPassword() {
+            if (loadedCollectionsCount < totalCollectionsToLoad) return UI.alert("Loading", "Harap tunggu sistem selesai memuat data...", "warning");
             let user = await UI.prompt("Lupa Password", "Masukkan Username:"); if (!user) return;
             let users = DB.get('users'); let uIdx = users.findIndex(u => u.username.toLowerCase() === user.trim().toLowerCase());
             if (uIdx === -1) return UI.alert("Error", "Username tidak ditemukan!", "error");
