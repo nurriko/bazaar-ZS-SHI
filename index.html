@@ -287,7 +287,7 @@
                 <button class="btn-danger" onclick="closeScanner()" style="padding: 4px 10px; font-size: 0.75rem;">Tutup</button>
             </div>
             <div id="qr-reader" style="width: 100%; border-radius: 8px; overflow: hidden; border: 2px dashed var(--border);"></div>
-            <p class="info-text" style="margin-top: 10px;">Pastikan pencahayaan cukup agar kode mudah terbaca oleh kamera.</p>
+            <p class="info-text" style="margin-top: 10px;">Pemindai telah dioptimalkan untuk baca cepat dari jarak jauh. Hasil scan akan langsung ditampilkan di layar Anda.</p>
         </div>
     </div>
 
@@ -517,14 +517,20 @@
                     
                     <div class="filter-container">
                         <span style="font-weight: 600; font-size: 0.85rem;">🔍 Filter:</span>
-                        <select id="filterGudangBrand" class="filter-select" onchange="renderTablesBazaar()"></select>
-                        <input type="text" id="filterGudangProduct" class="filter-select" list="bajuDatalist" placeholder="Ketik atau pilih baju..." oninput="debouncedRenderTables()">
-                        <select id="filterGudangKardus" class="filter-select" onchange="renderTablesBazaar()"></select>
+                        <select id="filterGudangBrand" class="filter-select" onchange="resetPage(); debouncedRenderTables()"></select>
+                        <input type="text" id="filterGudangProduct" class="filter-select" list="bajuDatalist" placeholder="Ketik atau pilih baju..." oninput="resetPage(); debouncedRenderTables()">
+                        <select id="filterGudangKardus" class="filter-select" onchange="resetPage(); debouncedRenderTables()"></select>
+                        <select id="filterGudangStatus" class="filter-select" onchange="resetPage(); debouncedRenderTables()">
+                            <option value="">-- Semua Status Packing --</option>
+                            <option value="belum">⏳ Belum Diproses</option>
+                            <option value="sudah">✅ Sudah Diproses</option>
+                        </select>
                     </div>
 
                     <div class="table-responsive" style="border-radius: 8px; box-shadow: 0 0 0 1px var(--border);">
                         <table><thead><tr><th>Brand</th><th>Baju</th><th>Variant</th><th>Code</th><th>Permintaan Sales</th><th style="width: 100px; background:#e0f2fe; color:#0369a1; text-align:center;">Qty Fisik (Dikirim)</th><th>Status Packing & Kardus</th><th>Aksi</th></tr></thead><tbody id="tableBodySOKeluar"></tbody></table>
                     </div>
+                    <div id="paginationPacking"></div>
                 </div>
 
                 <div class="card tab-content" id="tab-stok">
@@ -541,14 +547,22 @@
 
                     <div class="filter-container">
                         <span style="font-weight: 600; font-size: 0.85rem;">🔍 Filter:</span>
-                        <select id="filterSalesBrand" class="filter-select" onchange="renderTablesBazaar()"></select>
-                        <input type="text" id="filterSalesProduct" class="filter-select" list="bajuDatalist" placeholder="Ketik atau pilih baju..." oninput="debouncedRenderTables()">
-                        <select id="filterSalesKardus" class="filter-select" onchange="renderTablesBazaar()"></select>
+                        <select id="filterSalesBrand" class="filter-select" onchange="resetPage(); debouncedRenderTables()"></select>
+                        <input type="text" id="filterSalesProduct" class="filter-select" list="bajuDatalist" placeholder="Ketik atau pilih baju..." oninput="resetPage(); debouncedRenderTables()">
+                        <select id="filterSalesKardus" class="filter-select" onchange="resetPage(); debouncedRenderTables()"></select>
+                        <select id="filterSalesStatus" class="filter-select" onchange="resetPage(); debouncedRenderTables()">
+                            <option value="">-- Semua Status --</option>
+                            <option value="menunggu">⏳ Menunggu Gudang</option>
+                            <option value="dikemas">📦 Dikemas (Menunggu Diterima)</option>
+                            <option value="tidak_dikemas">❌ Tidak Dikemas</option>
+                            <option value="diterima">👍 Diterima Sales</option>
+                        </select>
                     </div>
                     
                     <div class="table-responsive">
                         <table><thead id="theadStok"></thead><tbody id="tableBodyStok"></tbody></table>
                     </div>
+                    <div id="paginationStok"></div>
                 </div>
 
                 <div class="card tab-content" id="tab-riwayat">
@@ -562,6 +576,7 @@
                     <div class="table-responsive">
                         <table><thead><tr><th>Bazaar</th><th>Brand</th><th>Baju</th><th>Variant</th><th>Code</th><th>Sisa Sistem</th><th>Fisik Kembali</th><th>Selisih</th><th id="thAksiRiwayat" class="hidden">Aksi</th></tr></thead><tbody id="tableBodyOpname"></tbody></table>
                     </div>
+                    <div id="paginationRiwayat"></div>
                 </div>
             </div>
         </div>
@@ -579,6 +594,21 @@
         let loadedCollectionsCount = 0; 
         const totalCollectionsToLoad = 5; 
         let currentActiveTab = ''; 
+        
+        // PENGATURAN PAGINATION
+        const ITEMS_PER_PAGE = 20;
+        let currentPage = { 'tab-packing': 1, 'tab-stok': 1, 'tab-riwayat': 1 };
+
+        function resetPage() {
+            if(currentActiveTab) currentPage[currentActiveTab] = 1;
+        }
+
+        function changePage(delta) {
+            if(currentActiveTab) {
+                currentPage[currentActiveTab] += delta;
+                debouncedRenderTables();
+            }
+        }
 
         // DEBOUNCED RENDER AGAR UI TIDAK BERAT
         let refreshTimeout = null;
@@ -681,7 +711,7 @@
         }
 
         // ==========================================
-        // FITUR ACTIVITY LOGS
+        // FITUR ACTIVITY LOGS (Dibatasi tampil 50 di UI agar ringan)
         // ==========================================
         async function logActivity(action, details) {
             if (!currentUser) return;
@@ -696,13 +726,18 @@
             let logs = DB.get('activity_logs');
             let tbody = document.getElementById('tableBodyLogs');
             if(tbody) {
-                tbody.innerHTML = [...logs].reverse().map(l => `<tr>
+                // Hanya memunculkan 50 log terakhir untuk efisiensi
+                let limitedLogs = logs.slice(-50).reverse();
+                tbody.innerHTML = limitedLogs.map(l => `<tr>
                     <td>${l.timestamp}</td>
                     <td><strong>${l.username}</strong></td>
                     <td><span class="badge ${l.role === 'Gudang' ? 'bg-gudang' : (l.role === 'Sales' ? 'bg-sales' : 'bg-admin')}">${l.role}</span></td>
                     <td><strong>${l.action}</strong></td>
                     <td>${l.details}</td>
                 </tr>`).join('');
+                if(logs.length > 50) {
+                    tbody.innerHTML += `<tr><td colspan="5" style="text-align:center; padding:15px; color:var(--info); background:#eff6ff;">Menampilkan 50 aktivitas terbaru.</td></tr>`;
+                }
             }
         }
 
@@ -775,30 +810,30 @@
         };
 
         // ==========================================
-        // SCANNER LOGIC
+        // SCANNER LOGIC (Kamera lebih ringan & Auto Filter Cepat)
         // ==========================================
         let html5QrcodeScanner;
         function openScanner(actionType) {
             document.getElementById('scannerModal').classList.add('active');
             html5QrcodeScanner = new Html5QrcodeScanner("qr-reader", { 
-                    fps: 20, 
+                    fps: 30, 
                     qrbox: function(viewfinderWidth, viewfinderHeight) {
                         let boxWidth = Math.min(viewfinderWidth * 0.9, 350);
                         let boxHeight = Math.min(viewfinderHeight * 0.4, 120);
                         return { width: boxWidth, height: boxHeight }; 
                     },
                     rememberLastUsedCamera: true, 
-                    aspectRatio: 1.0,
+                    aspectRatio: 1.333334,
                     videoConstraints: { 
                         facingMode: "environment", focusMode: "continuous",
-                        width: { min: 1280, ideal: 1920, max: 2560 }, height: { min: 720, ideal: 1080, max: 1440 }, 
+                        width: { min: 640, ideal: 1280, max: 1920 }, 
                         advanced: [{ focusMode: "continuous" }] 
                     },
                     experimentalFeatures: { useBarCodeDetectorIfSupported: true }
                 }, false);
             html5QrcodeScanner.render((decodedText) => { 
                 html5QrcodeScanner.pause(true); closeScanner(); 
-                setTimeout(() => { handleScanResult(decodedText, actionType); }, 400);
+                setTimeout(() => { handleScanResult(decodedText, actionType); }, 200);
             }, (error) => {});
         }
         function closeScanner() {
@@ -813,8 +848,23 @@
             let targetItem = items[targetIndex];
             let rowId = actionType === 'kemas' ? `row_sk_${targetItem.id}` : `row_s_${targetItem.id}`;
             
-            if (actionType === 'kemas') openTab('tab-packing');
-            else if (actionType === 'jual') openTab('tab-stok');
+            // AUTO FILTER AGAR BARANG LANGSUNG MUNCUL DI LAYAR TANPA PERLU CARI HALAMAN
+            if (actionType === 'kemas') {
+                document.getElementById('filterGudangProduct').value = targetItem.product;
+                document.getElementById('filterGudangStatus').value = '';
+                document.getElementById('filterGudangBrand').value = '';
+                document.getElementById('filterGudangKardus').value = '';
+                openTab('tab-packing');
+            } else if (actionType === 'jual' || actionType === 'opname') {
+                document.getElementById('filterSalesProduct').value = targetItem.product;
+                document.getElementById('filterSalesStatus').value = '';
+                document.getElementById('filterSalesBrand').value = '';
+                document.getElementById('filterSalesKardus').value = '';
+                openTab('tab-stok');
+            }
+
+            resetPage();
+            renderTablesBazaar();
 
             setTimeout(() => {
                 let rowEl = document.getElementById(rowId);
@@ -925,6 +975,7 @@
 
         function openTab(tabId) {
             currentActiveTab = tabId; 
+            resetPage(); // Reset halaman ke 1 setiap pindah tab
             
             ['tab-master', 'tab-permintaan', 'tab-packing', 'tab-stok', 'tab-riwayat', 'tab-sistem', 'tab-log'].forEach(id => { let el = document.getElementById(id); if(el) el.classList.remove('active'); });
             document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
@@ -1164,7 +1215,6 @@
             document.getElementById('packRefillDay').value = ''; 
             document.getElementById('packNote').value = '';
 
-            // Otomatis tentukan apakah mode split (jika ada request display atau string kardus mengandung "&")
             let dQtyReq = item.display_req_qty || 0;
             let isSplit = dQtyReq > 0 || (item.kardus && item.kardus.includes('&'));
             
@@ -1187,7 +1237,7 @@
                     let mS = parts[1].match(/\((\d+)pcs\)/);
                     if(mS) sQty = parseInt(mS[1]);
                 } else if (item.kardus && item.kardus !== "-") {
-                    ks = item.kardus; // Gunakan kardus sebelumnya sbg kardus stok
+                    ks = item.kardus; 
                 }
 
                 document.getElementById('packQtyDisplay').value = dQty;
@@ -1579,7 +1629,7 @@
         async function hapusRiwayat(id) { let conf = await UI.confirm("Hapus?", "", "warning"); if(conf) { logActivity('Hapus Riwayat', `Menghapus satu riwayat opname`); await DB.runTx('bazaar_items', (items) => items.filter(i => i.id !== id)); } }
         async function hapusSemuaRiwayat() { let conf = await UI.confirm("Hapus Semua?", "", "error"); if(conf) { logActivity('Hapus Semua Riwayat', `Mengosongkan semua riwayat opname`); await DB.runTx('bazaar_items', (items) => items.filter(i => i.status === 'active')); } }
 
-        // CONDITIONAL RENDERING: HANYA MERENDER TABEL YANG AKTIF AGAR LEBIH RINGAN
+        // RENDERING TABEL TER-OPTIMASI DENGAN PAGINATION
         function renderTablesBazaar() {
             let items = DB.get('bazaar_items'); 
             let tbSK = document.getElementById('tableBodySOKeluar'); 
@@ -1602,36 +1652,78 @@
             let fGB = (document.getElementById('filterGudangBrand')?.value||"").toLowerCase();
             let fGP = (document.getElementById('filterGudangProduct')?.value||"").toLowerCase();
             let fGK = (document.getElementById('filterGudangKardus')?.value||"").toLowerCase();
+            let fGStat = document.getElementById('filterGudangStatus')?.value||"";
 
             let fSB = (document.getElementById('filterSalesBrand')?.value||"").toLowerCase();
             let fSP = (document.getElementById('filterSalesProduct')?.value||"").toLowerCase();
             let fSK = (document.getElementById('filterSalesKardus')?.value||"").toLowerCase();
+            let fSStat = document.getElementById('filterSalesStatus')?.value||"";
             
+            let filteredItems = [];
+
+            // FILTERING DATA
             items.forEach(item => {
                 if (currentUser.departemen !== 'Superadmin' && activeBazaarName && item.bazaar_name !== activeBazaarName) return;
                 
+                let b = item.brand||"-", p = item.product||"-", k = item.kardus||"-";
+                let st = item.status_pengiriman || 'Menunggu Gudang';
+
+                if(item.status === 'active') {
+                    if (isPackingTab && (currentUser.departemen === 'Gudang' || currentUser.departemen === 'Superadmin')) {
+                        let matchStat = true;
+                        if(fGStat === 'belum') matchStat = (st === 'Menunggu Gudang' || st === 'Menunggu Refill Gudang');
+                        if(fGStat === 'sudah') matchStat = (st === 'Dikemas' || st === 'Tidak Dikemas' || st === 'Diterima Sales' || st === 'Diterima Sales (Revisi)');
+
+                        if(b.toLowerCase().includes(fGB) && p.toLowerCase().includes(fGP) && (fGK === "" || k.toLowerCase().includes(fGK)) && matchStat) {
+                            filteredItems.push(item);
+                        }
+                    }
+                    else if(isStokTab) {
+                        let matchStat = true;
+                        if(fSStat === 'menunggu') matchStat = (st === 'Menunggu Gudang' || st === 'Menunggu Refill Gudang');
+                        if(fSStat === 'dikemas') matchStat = (st === 'Dikemas');
+                        if(fSStat === 'tidak_dikemas') matchStat = (st === 'Tidak Dikemas');
+                        if(fSStat === 'diterima') matchStat = (st === 'Diterima Sales' || st === 'Diterima Sales (Revisi)');
+
+                        if(b.toLowerCase().includes(fSB) && p.toLowerCase().includes(fSP) && (fSK === "" || k.toLowerCase().includes(fSK)) && matchStat) {
+                            filteredItems.push(item);
+                        }
+                    }
+                } else if (isRiwayatTab) {
+                    filteredItems.push(item);
+                }
+            });
+
+            // LOGIKA PAGINATION
+            let totalItems = filteredItems.length;
+            let maxPage = Math.ceil(totalItems / ITEMS_PER_PAGE) || 1;
+            if (currentPage[currentActiveTab] > maxPage) currentPage[currentActiveTab] = maxPage;
+            if (currentPage[currentActiveTab] < 1) currentPage[currentActiveTab] = 1;
+
+            let startIndex = (currentPage[currentActiveTab] - 1) * ITEMS_PER_PAGE;
+            let paginatedItems = filteredItems.slice(startIndex, startIndex + ITEMS_PER_PAGE);
+
+            // MENGGAMBAR TABEL (HANYA UNTUK 20 ITEM DI HALAMAN INI)
+            paginatedItems.forEach(item => {
                 let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
                 let sisaSistem = actualQty - item.qty_sold; 
                 let b = item.brand||"-", p = item.product||"-", v = item.variant||"-", c = item.code||"-", k = item.kardus||"-";
-                let st = item.status_pengiriman || 'Menunggu Gudang', kg = item.keterangan_gudang || '-'; let orig = item.original_qty || item.qty_in; let changed = orig !== item.qty_in; let tClass = changed ? 'highlight-change' : '';
+                let st = item.status_pengiriman || 'Menunggu Gudang', kg = item.keterangan_gudang || '-'; 
+                let orig = item.original_qty || item.qty_in; let changed = orig !== item.qty_in; let tClass = changed ? 'highlight-change' : '';
                 
                 let kdText = item.kardus && item.kardus !== "-" ? `<br><span style="color:var(--info); font-size:0.75rem;">📦 Kardus: ${item.kardus}</span>` : '';
                 let ketSalesTxt = item.keterangan_sales && item.keterangan_sales !== "-" ? `<br><span style="color:var(--primary); font-size:0.75rem; font-weight:normal;">Ket: ${item.keterangan_sales}</span>` : '';
 
                 if(item.status === 'active') {
-                    if (isPackingTab && (currentUser.departemen === 'Gudang' || currentUser.departemen === 'Superadmin')) {
-                        if(b.toLowerCase().includes(fGB) && p.toLowerCase().includes(fGP) && (fGK === "" || k.toLowerCase().includes(fGK))) {
-                            let bdg = st === 'Dikemas' ? '✅ Dikemas' : (st === 'Tidak Dikemas' ? '❌ Kosong' : (st === 'Diterima Sales' ? '👍 Selesai' : (st === 'Diterima Sales (Revisi)' ? '⚠️ Revisi Sales' : '⏳ Menunggu')));
-                            
-                            let qtyGudangDisplay = `<strong style="font-size:1.1rem;">${item.qty_in}</strong>`;
-                            if (item.qty_revisi_sales !== undefined && item.qty_revisi_sales !== item.qty_in) {
-                                qtyGudangDisplay = `<span style="text-decoration:line-through; color:var(--danger);">${item.qty_in}</span><br><span style="color:var(--warning); font-size:1.1rem; font-weight:bold;">Revisi: ${item.qty_revisi_sales}</span>`;
-                            }
-
-                            hSK += `<tr class="${tClass}" id="row_sk_${item.id}"><td><strong>${b}</strong></td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center"><strong>${orig} pcs</strong>${ketSalesTxt}</td><td align="center">${qtyGudangDisplay}</td><td>${bdg}<br><small>${kg}</small>${kdText}</td><td><button class="btn-info" onclick="openPackingModal(${item.id})">Kemas/Edit</button></td></tr>`;
+                    if (isPackingTab) {
+                        let bdg = st === 'Dikemas' ? '✅ Dikemas' : (st === 'Tidak Dikemas' ? '❌ Kosong' : (st === 'Diterima Sales' || st === 'Diterima Sales (Revisi)' ? '👍 Selesai' : '⏳ Menunggu'));
+                        let qtyGudangDisplay = `<strong style="font-size:1.1rem;">${item.qty_in}</strong>`;
+                        if (item.qty_revisi_sales !== undefined && item.qty_revisi_sales !== item.qty_in) {
+                            qtyGudangDisplay = `<span style="text-decoration:line-through; color:var(--danger);">${item.qty_in}</span><br><span style="color:var(--warning); font-size:1.1rem; font-weight:bold;">Revisi: ${item.qty_revisi_sales}</span>`;
                         }
+                        hSK += `<tr class="${tClass}" id="row_sk_${item.id}"><td><strong>${b}</strong></td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center"><strong>${orig} pcs</strong>${ketSalesTxt}</td><td align="center">${qtyGudangDisplay}</td><td>${bdg}<br><small>${kg}</small>${kdText}</td><td><button class="btn-info" onclick="openPackingModal(${item.id})">Kemas/Edit</button></td></tr>`;
                     }
-                    if(isStokTab && b.toLowerCase().includes(fSB) && p.toLowerCase().includes(fSP) && (fSK === "" || k.toLowerCase().includes(fSK))) {
+                    if (isStokTab) {
                         if(currentUser.departemen === 'Gudang') {
                             hS += `<tr class="${tClass}" id="row_s_${item.id}"><td>${item.bazaar_name}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${sisaSistem}</td><td><button class="btn-warning" onclick="stockOpname(${item.id})">Opname SO</button></td></tr>`;
                         } else {
@@ -1667,11 +1759,38 @@
                     hO += `<tr><td>${item.bazaar_name}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${sisaSistem}</td><td align="center">${item.fisik_kembali}</td><td align="center">${sel===0?"✔️":sel}</td>${currentUser.departemen === 'Superadmin' ? `<td><button class="btn-danger" onclick="hapusRiwayat(${item.id})">Hapus</button></td>` : ''}</tr>`;
                 }
             });
-            
-            if(isPackingTab && tbSK) tbSK.innerHTML = hSK; 
-            if(isStokTab && tbS) tbS.innerHTML = hS; 
-            if(isRiwayatTab && tbO) tbO.innerHTML = hO;
-            
+
+            // JIKA KOSONG
+            if(paginatedItems.length === 0) {
+                let colSpan = isPackingTab ? 8 : (isStokTab ? 10 : 8);
+                let emptyHTML = `<tr><td colspan="${colSpan}" style="text-align:center; padding:20px; color:var(--secondary);">Tidak ada data yang sesuai dengan filter.</td></tr>`;
+                if(isPackingTab) hSK = emptyHTML;
+                if(isStokTab) hS = emptyHTML;
+                if(isRiwayatTab) hO = emptyHTML;
+            }
+
+            // TOMBOL PAGINATION HTML
+            let paginationHTML = `
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-top:15px; padding: 10px; background: #f8fafc; border-radius: 8px; border: 1px solid var(--border);">
+                    <button class="btn-secondary" onclick="changePage(-1)" ${currentPage[currentActiveTab] === 1 ? 'disabled style="opacity:0.5; cursor:not-allowed;"' : ''}>⬅️ Mundur</button>
+                    <span style="font-weight:600; font-size:0.85rem; text-align:center;">Halaman <span style="color:var(--primary); font-size:1rem;">${currentPage[currentActiveTab]}</span> dari ${maxPage} <br><span style="color:#64748b; font-weight:normal; font-size:0.75rem;">(Total ${totalItems} data)</span></span>
+                    <button class="btn-secondary" onclick="changePage(1)" ${currentPage[currentActiveTab] === maxPage ? 'disabled style="opacity:0.5; cursor:not-allowed;"' : ''}>Lanjut ➡️</button>
+                </div>
+            `;
+
+            if(isPackingTab && tbSK) {
+                tbSK.innerHTML = hSK;
+                document.getElementById('paginationPacking').innerHTML = totalItems > 0 ? paginationHTML : '';
+            }
+            if(isStokTab && tbS) {
+                tbS.innerHTML = hS;
+                document.getElementById('paginationStok').innerHTML = totalItems > 0 ? paginationHTML : '';
+            }
+            if(isRiwayatTab && tbO) {
+                tbO.innerHTML = hO;
+                document.getElementById('paginationRiwayat').innerHTML = totalItems > 0 ? paginationHTML : '';
+            }
+
             document.getElementById('btnExportPermintaanKemas')?.classList.remove('hidden');
             document.getElementById('btnExportPenjualanKemas')?.classList.remove('hidden');
             document.getElementById('btnExportPermintaan')?.classList.remove('hidden');
@@ -1719,15 +1838,19 @@
             
             let selFBG = document.getElementById('filterGudangBrand')?.value || "";
             let selFKG = document.getElementById('filterGudangKardus')?.value || "";
+            let selFGS = document.getElementById('filterGudangStatus')?.value || "";
             
             let selFBS = document.getElementById('filterSalesBrand')?.value || "";
             let selFKS = document.getElementById('filterSalesKardus')?.value || "";
+            let selFSS = document.getElementById('filterSalesStatus')?.value || "";
 
             let fbG = document.getElementById('filterGudangBrand'); if(fbG) { fbG.innerHTML = bHtml; fbG.value = selFBG; }
             let fkG = document.getElementById('filterGudangKardus'); if(fkG) { fkG.innerHTML = kHtml; fkG.value = selFKG; }
+            let fgS = document.getElementById('filterGudangStatus'); if(fgS) { fgS.value = selFGS; }
             
             let fbS = document.getElementById('filterSalesBrand'); if(fbS) { fbS.innerHTML = bHtml; fbS.value = selFBS; }
             let fkS = document.getElementById('filterSalesKardus'); if(fkS) { fkS.innerHTML = kHtml; fkS.value = selFKS; }
+            let fsS = document.getElementById('filterSalesStatus'); if(fsS) { fsS.value = selFSS; }
             
             let dl = document.getElementById('bajuDatalist'); 
             if(dl && dl.innerHTML !== pHtml) dl.innerHTML = pHtml;
@@ -1824,7 +1947,14 @@
         function renderMasterDateStatus() {
             let inv = DB.get('master_inventory'); let date = localStorage.getItem('master_inventory_date'); let statEl = document.getElementById('masterInventoryStatus'); let tbody = document.getElementById('tableBodyMasterPreview');
             if(statEl) statEl.innerHTML = inv.length > 0 ? `✅ <strong>${inv.length}</strong> data (${date})` : `❌ Belum ada Master Data`;
-            if(tbody) tbody.innerHTML = inv.slice(0,100).map(d => `<tr><td>${d.brand}</td><td>${d.product}</td><td>${d.variant}</td><td><code>${d.code}</code></td><td>${d.collection}</td><td>${d.btk}</td><td>${d.gu}</td><td>${d.grec}</td><td>${d.gtok}</td><td>${d.gweb}</td><td>${d.total}</td></tr>`).join('');
+            if(tbody) {
+                // Batasi hingga 50 untuk efisiensi
+                let limitedInv = inv.slice(0, 50);
+                tbody.innerHTML = limitedInv.map(d => `<tr><td>${d.brand}</td><td>${d.product}</td><td>${d.variant}</td><td><code>${d.code}</code></td><td>${d.collection}</td><td>${d.btk}</td><td>${d.gu}</td><td>${d.grec}</td><td>${d.gtok}</td><td>${d.gweb}</td><td>${d.total}</td></tr>`).join('');
+                if (inv.length > 50) {
+                    tbody.innerHTML += `<tr><td colspan="15" style="text-align:center; padding:15px; color:var(--info); background:#eff6ff;">⚠️ Menampilkan 50 dari total ${inv.length} master data.</td></tr>`;
+                }
+            }
         }
 
         // ==========================================
