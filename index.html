@@ -153,17 +153,44 @@
         .modal-actions { display: flex; justify-content: center; gap: 10px; }
         .modal-actions button { width: auto; flex: 1; }
         .table-scrollable { max-height: 350px; overflow-y: auto; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+
+        /* LOADING SPINNER MODERN */
+        .modern-spinner {
+            width: 50px; height: 50px;
+            border: 5px solid rgba(67, 56, 202, 0.2);
+            border-bottom-color: var(--primary);
+            border-radius: 50%;
+            display: inline-block;
+            box-sizing: border-box;
+            animation: rotation 1s linear infinite;
+        }
+        @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        #pageLoadingOverlay {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(4px);
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            z-index: 10005; opacity: 0; pointer-events: none; transition: opacity 0.2s ease;
+        }
+        #pageLoadingOverlay.active { opacity: 1; pointer-events: auto; }
         
         #dbLoading { position: fixed; top:0; left:0; width:100vw; height:100vh; background:white; display:flex; justify-content:center; align-items:center; z-index: 10000; flex-direction:column; }
     </style>
 </head>
 <body>
+    <!-- LOADING GLOBAL OVERLAY -->
+    <div id="pageLoadingOverlay">
+        <div class="modern-spinner"></div>
+        <p style="margin-top:15px; font-weight:600; color:var(--primary); font-size:1.1rem; letter-spacing:0.5px;">Memproses Data...</p>
+    </div>
+
     <!-- DATALIST UNTUK AUTOCOMPLETE NAMA BAJU -->
     <datalist id="bajuDatalist"></datalist>
 
     <div id="dbLoading">
-        <h2 style="color:var(--primary); margin-bottom:10px;">Menghubungkan ke Sistem...</h2>
-        <p class="info-text">Sinkronisasi Database Cloud Terenkripsi</p>
+        <div class="modern-spinner" style="width: 60px; height: 60px; border-width: 6px;"></div>
+        <h2 style="color:var(--primary); margin-top:20px; margin-bottom:5px;">Sinkronisasi Sistem</h2>
+        <p class="info-text">Menghubungkan ke Cloud Database...</p>
     </div>
 
     <!-- UI ALERT & PROMPT MODAL -->
@@ -595,7 +622,7 @@
         const totalCollectionsToLoad = 5; 
         let currentActiveTab = ''; 
         
-        // PENGATURAN PAGINATION
+        // PENGATURAN PAGINATION (Lebih Ringan)
         const ITEMS_PER_PAGE = 20;
         let currentPage = { 'tab-packing': 1, 'tab-stok': 1, 'tab-riwayat': 1 };
 
@@ -605,10 +632,18 @@
 
         function changePage(delta) {
             if(currentActiveTab) {
-                currentPage[currentActiveTab] += delta;
-                debouncedRenderTables();
+                showGlobalLoader();
+                setTimeout(() => {
+                    currentPage[currentActiveTab] += delta;
+                    renderTablesBazaar();
+                    hideGlobalLoader();
+                }, 150);
             }
         }
+
+        // FUNGSI TAMPILKAN LOADER
+        function showGlobalLoader() { document.getElementById('pageLoadingOverlay').classList.add('active'); }
+        function hideGlobalLoader() { document.getElementById('pageLoadingOverlay').classList.remove('active'); }
 
         // DEBOUNCED RENDER AGAR UI TIDAK BERAT
         let refreshTimeout = null;
@@ -622,10 +657,12 @@
         // DEBOUNCED KHUSUS UNTUK MENGETIK FILTER NAMA BAJU AGAR TIDAK NGE-LAG
         let renderTimeout = null;
         function debouncedRenderTables() {
+            showGlobalLoader();
             if(renderTimeout) clearTimeout(renderTimeout);
             renderTimeout = setTimeout(() => {
                 renderTablesBazaar();
-            }, 250); 
+                hideGlobalLoader();
+            }, 400); 
         }
 
         const DB = {
@@ -711,7 +748,7 @@
         }
 
         // ==========================================
-        // FITUR ACTIVITY LOGS (Dibatasi tampil 50 di UI agar ringan)
+        // FITUR ACTIVITY LOGS 
         // ==========================================
         async function logActivity(action, details) {
             if (!currentUser) return;
@@ -726,7 +763,6 @@
             let logs = DB.get('activity_logs');
             let tbody = document.getElementById('tableBodyLogs');
             if(tbody) {
-                // Hanya memunculkan 50 log terakhir untuk efisiensi
                 let limitedLogs = logs.slice(-50).reverse();
                 tbody.innerHTML = limitedLogs.map(l => `<tr>
                     <td>${l.timestamp}</td>
@@ -810,7 +846,7 @@
         };
 
         // ==========================================
-        // SCANNER LOGIC (Kamera lebih ringan & Auto Filter Cepat)
+        // SCANNER LOGIC (Anti Lag & Langsung Filter)
         // ==========================================
         let html5QrcodeScanner;
         function openScanner(actionType) {
@@ -848,37 +884,47 @@
             let targetItem = items[targetIndex];
             let rowId = actionType === 'kemas' ? `row_sk_${targetItem.id}` : `row_s_${targetItem.id}`;
             
-            // AUTO FILTER AGAR BARANG LANGSUNG MUNCUL DI LAYAR TANPA PERLU CARI HALAMAN
-            if (actionType === 'kemas') {
-                document.getElementById('filterGudangProduct').value = targetItem.product;
-                document.getElementById('filterGudangStatus').value = '';
-                document.getElementById('filterGudangBrand').value = '';
-                document.getElementById('filterGudangKardus').value = '';
-                openTab('tab-packing');
-            } else if (actionType === 'jual' || actionType === 'opname') {
-                document.getElementById('filterSalesProduct').value = targetItem.product;
-                document.getElementById('filterSalesStatus').value = '';
-                document.getElementById('filterSalesBrand').value = '';
-                document.getElementById('filterSalesKardus').value = '';
-                openTab('tab-stok');
-            }
-
-            resetPage();
-            renderTablesBazaar();
+            showGlobalLoader(); // Tampilkan loading saat aplikasi beralih dan memfilter otomatis
 
             setTimeout(() => {
-                let rowEl = document.getElementById(rowId);
-                if(rowEl) { rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); rowEl.classList.add('scanned-highlight'); setTimeout(() => rowEl.classList.remove('scanned-highlight'), 2000); }
-            }, 100);
+                if (actionType === 'kemas') {
+                    document.getElementById('filterGudangProduct').value = targetItem.product;
+                    document.getElementById('filterGudangStatus').value = '';
+                    document.getElementById('filterGudangBrand').value = '';
+                    document.getElementById('filterGudangKardus').value = '';
+                    currentActiveTab = 'tab-packing';
+                } else if (actionType === 'jual' || actionType === 'opname') {
+                    document.getElementById('filterSalesProduct').value = targetItem.product;
+                    document.getElementById('filterSalesStatus').value = '';
+                    document.getElementById('filterSalesBrand').value = '';
+                    document.getElementById('filterSalesKardus').value = '';
+                    currentActiveTab = 'tab-stok';
+                }
 
-            if (actionType === 'kemas') openPackingModal(targetItem.id); 
-            else if (actionType === 'jual') {
-                let st = targetItem.status_pengiriman || "Menunggu Gudang";
-                if(st === 'Dikemas') terimaBarangSales(targetItem.id); 
-                else catatPenjualan(targetItem.id);
-            } else if (actionType === 'opname') {
-                stockOpname(targetItem.id);
-            }
+                resetPage();
+                
+                ['tab-master', 'tab-permintaan', 'tab-packing', 'tab-stok', 'tab-riwayat', 'tab-sistem', 'tab-log'].forEach(id => { let el = document.getElementById(id); if(el) el.classList.remove('active'); });
+                document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+                let target = document.getElementById(currentActiveTab); if(target) target.classList.add('active'); let btn = document.getElementById('btn-' + currentActiveTab); if(btn) btn.classList.add('active');
+                
+                renderTablesBazaar();
+                hideGlobalLoader();
+
+                setTimeout(() => {
+                    let rowEl = document.getElementById(rowId);
+                    if(rowEl) { rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); rowEl.classList.add('scanned-highlight'); setTimeout(() => rowEl.classList.remove('scanned-highlight'), 2000); }
+                }, 100);
+
+                if (actionType === 'kemas') openPackingModal(targetItem.id); 
+                else if (actionType === 'jual') {
+                    let st = targetItem.status_pengiriman || "Menunggu Gudang";
+                    if(st === 'Dikemas') terimaBarangSales(targetItem.id); 
+                    else catatPenjualan(targetItem.id);
+                } else if (actionType === 'opname') {
+                    stockOpname(targetItem.id);
+                }
+
+            }, 250);
         }
 
         // ==========================================
@@ -894,11 +940,15 @@
             let user = document.getElementById('loginUser').value.trim(); let pass = document.getElementById('loginPass').value; let users = DB.get('users');
             let validUser = users.find(u => u.username.toLowerCase() === user.toLowerCase() && u.password === pass);
             if(validUser) { 
-                currentUser = validUser; 
-                sessionStorage.setItem('loggedInUser', JSON.stringify(validUser));
-                logActivity('Login', 'Berhasil login ke sistem');
-                showDashboard(); 
-                document.getElementById('loginUser').value = ''; document.getElementById('loginPass').value = ''; 
+                showGlobalLoader();
+                setTimeout(() => {
+                    currentUser = validUser; 
+                    sessionStorage.setItem('loggedInUser', JSON.stringify(validUser));
+                    logActivity('Login', 'Berhasil login ke sistem');
+                    showDashboard(); 
+                    document.getElementById('loginUser').value = ''; document.getElementById('loginPass').value = ''; 
+                    hideGlobalLoader();
+                }, 400);
             } else { await UI.alert("Gagal", "Username/Password salah.", "error"); }
         }
         async function register() {
@@ -906,12 +956,16 @@
             let user = document.getElementById('regUser').value.trim(); let pass = document.getElementById('regPass').value; let dept = document.getElementById('regDept').value;
             if(!user || !pass) return UI.alert("Peringatan", "Wajib diisi!", "warning");
             
+            showGlobalLoader();
             DB.runTx('users', (users) => {
                 if(!users.find(u => u.username.toLowerCase() === user.toLowerCase())) {
                     users.push({ username: user, password: pass, departemen: dept });
                 }
                 return users;
-            }).then(() => { UI.alert("Berhasil", "Silakan login.", "success"); showLogin(); });
+            }).then(() => { 
+                hideGlobalLoader();
+                UI.alert("Berhasil", "Silakan login.", "success"); showLogin(); 
+            });
         }
         async function lupaPassword() {
             if (loadedCollectionsCount < totalCollectionsToLoad) return UI.alert("Loading", "Harap tunggu sistem selesai memuat data...", "warning");
@@ -920,19 +974,27 @@
             if (uIdx === -1) return UI.alert("Error", "Username tidak ditemukan!", "error");
             let newPass = await UI.prompt("Reset Password", `Masukkan password BARU:`); if (!newPass) return;
             
+            showGlobalLoader();
             DB.runTx('users', (usersObj) => {
                 let idx = usersObj.findIndex(u => u.username.toLowerCase() === user.trim().toLowerCase());
                 if(idx !== -1) usersObj[idx].password = newPass;
                 return usersObj;
-            }).then(() => { UI.alert("Sukses", "Password diperbarui.", "success"); });
+            }).then(() => { 
+                hideGlobalLoader();
+                UI.alert("Sukses", "Password diperbarui.", "success"); 
+            });
         }
         async function logout() { 
             let conf = await UI.confirm("Keluar?", "Yakin keluar?", "question"); 
             if(conf) { 
-                logActivity('Logout', 'Keluar dari sistem');
-                currentUser = null; sessionStorage.removeItem('loggedInUser');
-                activeBazaarName = ""; sessionStorage.removeItem('activeBazaarName'); 
-                showLogin(); 
+                showGlobalLoader();
+                setTimeout(() => {
+                    logActivity('Logout', 'Keluar dari sistem');
+                    currentUser = null; sessionStorage.removeItem('loggedInUser');
+                    activeBazaarName = ""; sessionStorage.removeItem('activeBazaarName'); 
+                    showLogin(); 
+                    hideGlobalLoader();
+                }, 400);
             } 
         }
 
@@ -974,14 +1036,18 @@
         }
 
         function openTab(tabId) {
-            currentActiveTab = tabId; 
-            resetPage(); // Reset halaman ke 1 setiap pindah tab
-            
-            ['tab-master', 'tab-permintaan', 'tab-packing', 'tab-stok', 'tab-riwayat', 'tab-sistem', 'tab-log'].forEach(id => { let el = document.getElementById(id); if(el) el.classList.remove('active'); });
-            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-            let target = document.getElementById(tabId); if(target) target.classList.add('active'); let btn = document.getElementById('btn-' + tabId); if(btn) btn.classList.add('active');
-            
-            debouncedRefreshUI(); 
+            showGlobalLoader();
+            setTimeout(() => {
+                currentActiveTab = tabId; 
+                resetPage(); 
+                
+                ['tab-master', 'tab-permintaan', 'tab-packing', 'tab-stok', 'tab-riwayat', 'tab-sistem', 'tab-log'].forEach(id => { let el = document.getElementById(id); if(el) el.classList.remove('active'); });
+                document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+                let target = document.getElementById(tabId); if(target) target.classList.add('active'); let btn = document.getElementById('btn-' + tabId); if(btn) btn.classList.add('active');
+                
+                refreshUI(); 
+                hideGlobalLoader();
+            }, 150);
         }
 
         function populateSalesBazaarDropdown() { let bazaars = DB.get('bazaars_list'); let select = document.getElementById('salesBazaarSelect'); select.innerHTML = '<option value="">-- Pilih Bazaar --</option><option value="NEW" style="font-weight:bold; color:var(--primary);">+ Buka/Buat Bazaar Baru</option>'; bazaars.forEach(b => select.innerHTML += `<option value="${b.name}">${b.name} (${b.start_date} s/d ${b.end_date})</option>`); toggleNewBazaarInput(); }
@@ -1050,6 +1116,7 @@
                 codesToUpdate.push({ code: code, ref: masterItem });
             }
             
+            showGlobalLoader();
             DB.runMultiTx({
                 'master_inventory': (invItems) => {
                     codesToUpdate.forEach(d => {
@@ -1080,6 +1147,7 @@
                 }
             }).then(() => {
                 logActivity('Request Barang', `Meminta manual sebanyak ${qty} pcs untuk bazaar ${activeBazaarName}`);
+                hideGlobalLoader();
                 UI.alert("Berhasil", "Menunggu Gudang.", "success");
                 document.getElementById('itemQty').value = ''; document.getElementById('itemKeterangan').value = ''; document.getElementById('productSelect').value = ''; renderVariants();
             });
@@ -1136,6 +1204,7 @@
         async function konfirmasiUploadBawaan() {
             if(pendingUploadData.some(i => !i.isValid)) return;
             
+            showGlobalLoader();
             DB.runMultiTx({
                 'master_inventory': (invItems) => {
                     pendingUploadData.forEach(d => {
@@ -1177,6 +1246,7 @@
                 }
             }).then(() => {
                 logActivity('Upload Permintaan', `Mengupload data permintaan via CSV untuk bazaar ${activeBazaarName}`);
+                hideGlobalLoader();
                 UI.alert("Sukses", "Data dikirim ke Gudang.", "success");
                 batalUploadBawaan(); openTab('tab-stok'); 
             });
@@ -1184,7 +1254,7 @@
         function batalUploadBawaan() { pendingUploadData = []; document.getElementById('uploadPreviewSection').classList.add('hidden'); document.getElementById('fileBawaan').value = ''; }
 
         // ==========================================
-        // MODAL PACKING (GUDANG) DENGAN MODE KARDUS (SINGLE/SPLIT)
+        // MODAL PACKING (GUDANG) DENGAN MODE KARDUS
         // ==========================================
         let currentPackingId = null;
 
@@ -1323,6 +1393,7 @@
             if(isNaN(qReal) || qReal < 0) return UI.alert("Error", "Qty Aktual tidak valid!", "error");
             let diffStore = 0;
             
+            showGlobalLoader();
             DB.runMultiTx({
                 'bazaar_items': (bItems) => {
                     let idx = bItems.findIndex(i => i.id === currentPackingId);
@@ -1347,8 +1418,9 @@
                 }
             }).then(() => {
                 logActivity('Packing Barang', `Packing kode ${itemCodeToUpdate} dengan jumlah ${qReal} (Status: ${st})`);
+                hideGlobalLoader();
                 closePackingModal();
-            }).catch(e => { UI.alert("Ditolak", e, "error"); });
+            }).catch(e => { hideGlobalLoader(); UI.alert("Ditolak", e, "error"); });
         }
 
         // ==========================================
@@ -1452,6 +1524,7 @@
 
             let isTambahan = await UI.confirm("Jenis Permintaan", "Apakah ini meminta TAMBAHAN STOK BARU dari gudang?\n\n(Pilih 'Ya, Tambah Stok' jika ingin menambah stok dari Master. Pilih 'Batal / Hanya Catatan' jika hanya memberi instruksi untuk barang yang sedang diproses gudang saat ini.)", "question", "Ya, Tambah Stok", "Hanya Catatan");
 
+            showGlobalLoader();
             if (isTambahan) {
                 DB.runMultiTx({
                     'master_inventory': (inv) => {
@@ -1475,10 +1548,12 @@
                     }
                 }).then(() => {
                     logActivity('Req Display', `Meminta Kardus Display kode: ${item.code} qty: ${reqQty}`);
+                    hideGlobalLoader();
                     UI.alert("Sukses", `Permintaan Kardus Display berhasil dikirim ke Gudang.`, "success");
                 });
             } else {
                  if (item.status_pengiriman === 'Dikemas' || item.status_pengiriman === 'Diterima Sales' || item.status_pengiriman === 'Diterima Sales (Revisi)') {
+                     hideGlobalLoader();
                      return UI.alert("Ditolak", "Barang ini sudah dipacking/diterima. Anda harus memilih opsi 'Tambah Stok' jika membutuhkan barang lagi.", "warning");
                  }
                  DB.runTx('bazaar_items', (items) => {
@@ -1492,6 +1567,7 @@
                     return items;
                  }).then(() => {
                     logActivity('Req Display', `Meminta Kardus Display kode: ${item.code} qty: ${reqQty}`);
+                    hideGlobalLoader();
                     UI.alert("Sukses", `Permintaan Kardus Display berhasil dikirim ke Gudang.`, "success");
                  });
             }
@@ -1503,6 +1579,7 @@
             let conf = await UI.confirm("Batal / Edit Display", "Yakin ingin membatalkan permintaan Display ini?\n\n(Catatan: Jika ingin mengedit jumlah, batalkan permintaan ini terlebih dahulu lalu buat ulang permintaannya.)", "warning", "Ya, Batalkan", "Tutup");
             if(!conf) return;
 
+            showGlobalLoader();
             if (item.display_req_type === 'tambahan') {
                 DB.runMultiTx({
                     'master_inventory': (inv) => {
@@ -1525,7 +1602,8 @@
                     }
                 }).then(() => {
                     logActivity('Batal Display', `Membatalkan Kardus Display kode: ${item.code}`);
-                    UI.alert("Sukses", "Permintaan Kardus Display berhasil dibatalkan. Silakan tekan tombol 'Req Display' kembali jika Anda ingin mengatur ulang.", "success");
+                    hideGlobalLoader();
+                    UI.alert("Sukses", "Permintaan Kardus Display berhasil dibatalkan.", "success");
                 });
             } else {
                 DB.runTx('bazaar_items', (items) => {
@@ -1540,7 +1618,8 @@
                     return items;
                 }).then(() => {
                     logActivity('Batal Display', `Membatalkan Kardus Display kode: ${item.code}`);
-                    UI.alert("Sukses", "Permintaan Kardus Display berhasil dibatalkan. Silakan tekan tombol 'Req Display' kembali jika Anda ingin mengatur ulang.", "success");
+                    hideGlobalLoader();
+                    UI.alert("Sukses", "Permintaan Kardus Display berhasil dibatalkan.", "success");
                 });
             }
         }
@@ -1553,12 +1632,14 @@
             let opt = await UI.select("SO Kembali", `Sistem: ${sisa}`, ["Sesuai Sistem", "Tidak Sesuai"]); if(!opt) return;
             let fisik = sisa; if(opt !== "Sesuai Sistem") { let f = await UI.prompt("Fisik", "Jumlah?"); if(!f) return; fisik = parseInt(f); if(isNaN(fisik)) return; }
             
+            showGlobalLoader();
             DB.runTx('bazaar_items', (items) => {
                 let idx = items.findIndex(i => i.id === id);
                 if(idx !== -1) { items[idx].fisik_kembali = fisik; items[idx].status = 'done'; }
                 return items;
             }).then(() => {
                 logActivity('Stock Opname', `SO kode: ${itemRef.code} dengan stok fisik: ${fisik}`);
+                hideGlobalLoader();
                 UI.alert("Sukses", "Opname disimpan", "success");
             });
         }
@@ -1580,13 +1661,14 @@
                 }
             });
         }
-        async function hapusBazaarSales() { let sel = document.getElementById('salesBazaarSelect').value; if(!sel || sel === 'NEW') return; let conf = await UI.confirm("Hapus?", "Yakin hapus bazaar?", "error"); if(conf) { logActivity('Hapus Bazaar', `Sales menghapus bazaar: ${sel}`); await hapusBazaarData(sel); populateSalesBazaarDropdown(); UI.alert("Sukses", "Bazaar dihapus", "success"); } }
-        async function hapusBazaarAdmin(bName) { let conf = await UI.confirm("Hapus?", `Yakin hapus ${bName}?`, "error"); if(conf) { logActivity('Hapus Bazaar', `Superadmin menghapus bazaar: ${bName}`); await hapusBazaarData(bName); UI.alert("Sukses", "Terhapus", "success"); } }
+        async function hapusBazaarSales() { let sel = document.getElementById('salesBazaarSelect').value; if(!sel || sel === 'NEW') return; let conf = await UI.confirm("Hapus?", "Yakin hapus bazaar?", "error"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus Bazaar', `Sales menghapus bazaar: ${sel}`); await hapusBazaarData(sel); populateSalesBazaarDropdown(); hideGlobalLoader(); UI.alert("Sukses", "Bazaar dihapus", "success"); }, 100); } }
+        async function hapusBazaarAdmin(bName) { let conf = await UI.confirm("Hapus?", `Yakin hapus ${bName}?`, "error"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus Bazaar', `Superadmin menghapus bazaar: ${bName}`); await hapusBazaarData(bName); hideGlobalLoader(); UI.alert("Sukses", "Terhapus", "success"); }, 100); } }
         
         async function hapusBarang(id) { 
             let itemRef = DB.get('bazaar_items').find(i => i.id === id); if(!itemRef) return; 
             let conf = await UI.confirm("Hapus?", `Kembalikan ${itemRef.code} ke gudang?`, "warning"); if(!conf) return; 
             
+            showGlobalLoader();
             DB.runMultiTx({
                 'bazaar_items': (items) => items.filter(i => i.id !== id),
                 'master_inventory': (inv) => {
@@ -1599,6 +1681,7 @@
                 }
             }).then(() => {
                 logActivity('Hapus Barang', `Menghapus permintaan barang kode: ${itemRef.code}`);
+                hideGlobalLoader();
                 UI.alert("Sukses", "Terhapus", "success"); 
             });
         }
@@ -1606,6 +1689,7 @@
             let conf = await UI.confirm("Hapus Semua?", "Semua dikembalikan ke master?", "error"); if(!conf) return; 
             let itemsToRemove = DB.get('bazaar_items').filter(item => { let match = activeBazaarName ? (item.bazaar_name === activeBazaarName) : true; return match && item.status === 'active'; });
             
+            showGlobalLoader();
             DB.runMultiTx({
                 'bazaar_items': (items) => items.filter(item => { 
                     let match = activeBazaarName ? (item.bazaar_name === activeBazaarName) : true; 
@@ -1623,11 +1707,12 @@
                 }
             }).then(() => {
                 logActivity('Hapus Semua Barang', `Menghapus semua stok berjalan dari bazaar aktif`);
+                hideGlobalLoader();
                 UI.alert("Sukses", "Semua terhapus", "success"); 
             });
         }
-        async function hapusRiwayat(id) { let conf = await UI.confirm("Hapus?", "", "warning"); if(conf) { logActivity('Hapus Riwayat', `Menghapus satu riwayat opname`); await DB.runTx('bazaar_items', (items) => items.filter(i => i.id !== id)); } }
-        async function hapusSemuaRiwayat() { let conf = await UI.confirm("Hapus Semua?", "", "error"); if(conf) { logActivity('Hapus Semua Riwayat', `Mengosongkan semua riwayat opname`); await DB.runTx('bazaar_items', (items) => items.filter(i => i.status === 'active')); } }
+        async function hapusRiwayat(id) { let conf = await UI.confirm("Hapus?", "", "warning"); if(conf) { showGlobalLoader(); logActivity('Hapus Riwayat', `Menghapus satu riwayat opname`); await DB.runTx('bazaar_items', (items) => items.filter(i => i.id !== id)); hideGlobalLoader(); } }
+        async function hapusSemuaRiwayat() { let conf = await UI.confirm("Hapus Semua?", "", "error"); if(conf) { showGlobalLoader(); logActivity('Hapus Semua Riwayat', `Mengosongkan semua riwayat opname`); await DB.runTx('bazaar_items', (items) => items.filter(i => i.status === 'active')); hideGlobalLoader(); } }
 
         // RENDERING TABEL TER-OPTIMASI DENGAN PAGINATION
         function renderTablesBazaar() {
@@ -1703,7 +1788,7 @@
             let startIndex = (currentPage[currentActiveTab] - 1) * ITEMS_PER_PAGE;
             let paginatedItems = filteredItems.slice(startIndex, startIndex + ITEMS_PER_PAGE);
 
-            // MENGGAMBAR TABEL (HANYA UNTUK 20 ITEM DI HALAMAN INI)
+            // MENGGAMBAR TABEL 
             paginatedItems.forEach(item => {
                 let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
                 let sisaSistem = actualQty - item.qty_sold; 
@@ -1863,7 +1948,7 @@
             let bazaars = DB.get('bazaars_list'); let tbodyB = document.getElementById('tableBodyBazaarsAdmin');
             if(tbodyB) tbodyB.innerHTML = bazaars.map(b => `<tr><td>${b.name}</td><td>${b.start_date}</td><td><button class="btn-danger" onclick="hapusBazaarAdmin('${b.name}')">Hapus</button></td></tr>`).join('');
         }
-        async function hapusUser(username) { let conf = await UI.confirm("Hapus?", `Hapus ${username}?`, "warning"); if(conf) { logActivity('Hapus User', `Menghapus user: ${username}`); DB.runTx('users', (users) => users.filter(u => u.username !== username)); } }
+        async function hapusUser(username) { let conf = await UI.confirm("Hapus?", `Hapus ${username}?`, "warning"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus User', `Menghapus user: ${username}`); await DB.runTx('users', (users) => users.filter(u => u.username !== username)); hideGlobalLoader(); }, 100); } }
         
         async function tambahMasterManual() {
             let brand = document.getElementById('masBrand').value.trim();
@@ -1890,6 +1975,7 @@
                 if (!confOverride) return;
             }
 
+            showGlobalLoader();
             DB.runTx('master_inventory', (inv) => {
                 let existingIdx = inv.findIndex(item => item.code.toLowerCase() === code.toLowerCase());
                 if (existingIdx !== -1) inv[existingIdx] = newData;
@@ -1898,6 +1984,7 @@
             }).then(() => {
                 logActivity('Tambah Master Manual', `Menambah/Update manual produk kode: ${code}`);
                 localStorage.setItem('master_inventory_date', new Date().toLocaleString());
+                hideGlobalLoader();
                 UI.alert("Sukses", "Data berhasil disimpan ke Master Inventory.", "success");
                 
                 document.getElementById('masBrand').value = ''; document.getElementById('masProduct').value = '';
@@ -1915,6 +2002,7 @@
             reader.onload = async function(e) {
                 let lines = parseCSV(e.target.result); 
                 
+                showGlobalLoader();
                 DB.runTx('master_inventory', (currentInv) => {
                     for(let i=1; i<lines.length; i++) {
                         let c = lines[i]; 
@@ -1936,6 +2024,7 @@
                 }).then(() => {
                     logActivity('Upload CSV Master', `Mengupload data CSV Master Inventory`);
                     localStorage.setItem('master_inventory_date', new Date().toLocaleString()); 
+                    hideGlobalLoader();
                     UI.alert("Sukses", "Data Master berhasil di-update dari CSV.", "success"); 
                     fileInput.value = ''; 
                     document.getElementById('uploadStatusAdmin').innerHTML = '';
@@ -1943,7 +2032,7 @@
             }; 
             reader.readAsText(fileInput.files[0]);
         }
-        async function hapusDataMaster() { let conf = await UI.confirm("Hapus Semua", "Yakin kosongkan SELURUH DATA master?", "error"); if(conf) { logActivity('Kosongkan Master', `Menghapus seluruh Master Inventory Data`); DB.runTx('master_inventory', () => []); } }
+        async function hapusDataMaster() { let conf = await UI.confirm("Hapus Semua", "Yakin kosongkan SELURUH DATA master?", "error"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Kosongkan Master', `Menghapus seluruh Master Inventory Data`); await DB.runTx('master_inventory', () => []); hideGlobalLoader(); }, 100); } }
         function renderMasterDateStatus() {
             let inv = DB.get('master_inventory'); let date = localStorage.getItem('master_inventory_date'); let statEl = document.getElementById('masterInventoryStatus'); let tbody = document.getElementById('tableBodyMasterPreview');
             if(statEl) statEl.innerHTML = inv.length > 0 ? `✅ <strong>${inv.length}</strong> data (${date})` : `❌ Belum ada Master Data`;
@@ -1977,224 +2066,231 @@
                 targetBazaar = selectedBazaar;
             }
 
-            let allItems = DB.get('bazaar_items').filter(i => i.bazaar_name === targetBazaar);
-            let itemsToExport = type === 'sokembali' ? allItems : allItems.filter(i => i.status === 'active');
+            showGlobalLoader();
+            setTimeout(() => {
+                let allItems = DB.get('bazaar_items').filter(i => i.bazaar_name === targetBazaar);
+                let itemsToExport = type === 'sokembali' ? allItems : allItems.filter(i => i.status === 'active');
 
-            if (itemsToExport.length === 0) return UI.alert("Kosong", `Tidak ada data untuk bazaar "${targetBazaar}".`, "warning");
-
-            logActivity('Export Excel', `Export laporan tipe: ${type} untuk bazaar: ${targetBazaar}`);
-
-            let tableHtml = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
-            <head>
-                <meta charset="UTF-8">
-                <!--[if gte mso 9]>
-                <xml>
-                    <x:ExcelWorkbook>
-                        <x:ExcelWorksheets>
-                            <x:ExcelWorksheet>
-                                <x:Name>Laporan ${type}</x:Name>
-                                <x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>
-                            </x:ExcelWorksheet>
-                        </x:ExcelWorksheets>
-                    </x:ExcelWorkbook>
-                </xml>
-                <![endif]-->
-            </head>
-            <body>`;
-
-            let titleJudul = type === 'permintaan' ? 'Permintaan & Packing Gudang' : (type === 'penjualan' ? 'Penjualan & Stok' : 'Opname SO Kembali');
-            tableHtml += `<h2 style="font-family: sans-serif;">Laporan ${titleJudul}</h2>`;
-            tableHtml += `<p style="font-family: sans-serif;"><b>Bazaar/Event:</b> ${targetBazaar}<br><b>Waktu Download:</b> ${new Date().toLocaleString('id-ID')}</p>`;
-            
-            tableHtml += `<table border="1" style="border-collapse: collapse; font-family: sans-serif; font-size: 12px; width: 100%;">`;
-
-            if (type === 'permintaan') {
-                tableHtml += `
-                <thead style="background-color: #4338ca; color: white; font-weight: bold;">
-                    <tr>
-                        <th style="padding: 10px;">No</th>
-                        <th style="padding: 10px;">Brand</th>
-                        <th style="padding: 10px;">Produk (Baju)</th>
-                        <th style="padding: 10px;">Variant</th>
-                        <th style="padding: 10px;">Kode Item</th>
-                        <th style="padding: 10px;">Qty Awal Diminta (Sales)</th>
-                        <th style="padding: 10px;">Qty Aktual (Dikirim Gudang)</th>
-                        <th style="padding: 10px;">Qty Revisi (Diterima Sales)</th>
-                        <th style="padding: 10px;">Perubahan Qty (Sistem)</th>
-                        <th style="padding: 10px;">Status Packing</th>
-                        <th style="padding: 10px;">Lokasi / Kardus</th>
-                        <th style="padding: 10px;">Keterangan Sales</th>
-                        <th style="padding: 10px;">Catatan Gudang</th>
-                        <th style="padding: 10px;">Waktu Request</th>
-                    </tr>
-                </thead><tbody>`;
-
-                itemsToExport.forEach((item, index) => {
-                    let qtyAwal = item.original_qty || item.qty_in;
-                    let status = item.status_pengiriman || "Belum di packing";
-                    
-                    if (status === 'Menunggu Gudang' || status === 'Menunggu Refill Gudang') {
-                        status = "Belum di packing";
-                    }
-
-                    let kardus = item.kardus && item.kardus !== "-" ? item.kardus : "Belum ada lokasi kardus";
-                    let ketSales = item.keterangan_sales && item.keterangan_sales !== "-" ? item.keterangan_sales : "-";
-                    let ketGudang = item.keterangan_gudang && item.keterangan_gudang !== "-" ? item.keterangan_gudang : "-";
-                    
-                    let isChanged = qtyAwal !== item.qty_in;
-                    let tClass = isChanged ? 'background-color: #fef08a;' : ''; 
-                    let perubahanText = isChanged ? `Kurang/Berubah (-${qtyAwal - item.qty_in})` : "Sesuai";
-
-                    let qtyRevisiDisplay = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : '-';
-                    let styleRevisi = (item.qty_revisi_sales !== undefined && item.qty_revisi_sales !== item.qty_in) ? 'color: red; font-weight: bold;' : '';
-
-                    tableHtml += `
-                    <tr style="${tClass}">
-                        <td style="padding: 5px; text-align: center;">${index + 1}</td>
-                        <td style="padding: 5px;">${item.brand || '-'}</td>
-                        <td style="padding: 5px;">${item.product || '-'}</td>
-                        <td style="padding: 5px;">${item.variant || '-'}</td>
-                        <td style="padding: 5px; mso-number-format:'\\@';">${item.code || '-'}</td>
-                        <td style="padding: 5px; text-align: center;">${qtyAwal}</td>
-                        <td style="padding: 5px; text-align: center;"><b>${item.qty_in}</b></td>
-                        <td style="padding: 5px; text-align: center; ${styleRevisi}">${qtyRevisiDisplay}</td>
-                        <td style="padding: 5px; text-align: center; color: ${isChanged ? 'red' : 'green'};">${perubahanText}</td>
-                        <td style="padding: 5px; font-weight: bold;">${status}</td>
-                        <td style="padding: 5px; text-align: center;">${kardus}</td>
-                        <td style="padding: 5px;">${ketSales}</td>
-                        <td style="padding: 5px;">${ketGudang}</td>
-                        <td style="padding: 5px;">${item.req_date || '-'}</td>
-                    </tr>`;
-                });
-            } else if (type === 'penjualan') {
-                
-                let bazaarsList = DB.get('bazaars_list');
-                let currentBazaarInfo = bazaarsList.find(b => b.name === targetBazaar);
-                let dateColumns = [];
-                
-                if (currentBazaarInfo && currentBazaarInfo.start_date && currentBazaarInfo.end_date) {
-                    let curr = new Date(currentBazaarInfo.start_date + "T12:00:00Z");
-                    let end = new Date(currentBazaarInfo.end_date + "T12:00:00Z");
-                    while (curr <= end) {
-                        dateColumns.push(curr.toISOString().split('T')[0]);
-                        curr.setDate(curr.getDate() + 1);
-                    }
+                if (itemsToExport.length === 0) {
+                    hideGlobalLoader();
+                    return UI.alert("Kosong", `Tidak ada data untuk bazaar "${targetBazaar}".`, "warning");
                 }
+
+                logActivity('Export Excel', `Export laporan tipe: ${type} untuk bazaar: ${targetBazaar}`);
+
+                let tableHtml = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+                <head>
+                    <meta charset="UTF-8">
+                    <!--[if gte mso 9]>
+                    <xml>
+                        <x:ExcelWorkbook>
+                            <x:ExcelWorksheets>
+                                <x:ExcelWorksheet>
+                                    <x:Name>Laporan ${type}</x:Name>
+                                    <x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>
+                                </x:ExcelWorksheet>
+                            </x:ExcelWorksheets>
+                        </x:ExcelWorkbook>
+                    </xml>
+                    <![endif]-->
+                </head>
+                <body>`;
+
+                let titleJudul = type === 'permintaan' ? 'Permintaan & Packing Gudang' : (type === 'penjualan' ? 'Penjualan & Stok' : 'Opname SO Kembali');
+                tableHtml += `<h2 style="font-family: sans-serif;">Laporan ${titleJudul}</h2>`;
+                tableHtml += `<p style="font-family: sans-serif;"><b>Bazaar/Event:</b> ${targetBazaar}<br><b>Waktu Download:</b> ${new Date().toLocaleString('id-ID')}</p>`;
                 
-                if (dateColumns.length === 0) {
-                    let uniqueDates = new Set();
-                    itemsToExport.forEach(item => {
-                        if (item.sales_history) {
-                            item.sales_history.forEach(h => uniqueDates.add(h.date));
+                tableHtml += `<table border="1" style="border-collapse: collapse; font-family: sans-serif; font-size: 12px; width: 100%;">`;
+
+                if (type === 'permintaan') {
+                    tableHtml += `
+                    <thead style="background-color: #4338ca; color: white; font-weight: bold;">
+                        <tr>
+                            <th style="padding: 10px;">No</th>
+                            <th style="padding: 10px;">Brand</th>
+                            <th style="padding: 10px;">Produk (Baju)</th>
+                            <th style="padding: 10px;">Variant</th>
+                            <th style="padding: 10px;">Kode Item</th>
+                            <th style="padding: 10px;">Qty Awal Diminta (Sales)</th>
+                            <th style="padding: 10px;">Qty Aktual (Dikirim Gudang)</th>
+                            <th style="padding: 10px;">Qty Revisi (Diterima Sales)</th>
+                            <th style="padding: 10px;">Perubahan Qty (Sistem)</th>
+                            <th style="padding: 10px;">Status Packing</th>
+                            <th style="padding: 10px;">Lokasi / Kardus</th>
+                            <th style="padding: 10px;">Keterangan Sales</th>
+                            <th style="padding: 10px;">Catatan Gudang</th>
+                            <th style="padding: 10px;">Waktu Request</th>
+                        </tr>
+                    </thead><tbody>`;
+
+                    itemsToExport.forEach((item, index) => {
+                        let qtyAwal = item.original_qty || item.qty_in;
+                        let status = item.status_pengiriman || "Belum di packing";
+                        
+                        if (status === 'Menunggu Gudang' || status === 'Menunggu Refill Gudang') {
+                            status = "Belum di packing";
                         }
+
+                        let kardus = item.kardus && item.kardus !== "-" ? item.kardus : "Belum ada lokasi kardus";
+                        let ketSales = item.keterangan_sales && item.keterangan_sales !== "-" ? item.keterangan_sales : "-";
+                        let ketGudang = item.keterangan_gudang && item.keterangan_gudang !== "-" ? item.keterangan_gudang : "-";
+                        
+                        let isChanged = qtyAwal !== item.qty_in;
+                        let tClass = isChanged ? 'background-color: #fef08a;' : ''; 
+                        let perubahanText = isChanged ? `Kurang/Berubah (-${qtyAwal - item.qty_in})` : "Sesuai";
+
+                        let qtyRevisiDisplay = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : '-';
+                        let styleRevisi = (item.qty_revisi_sales !== undefined && item.qty_revisi_sales !== item.qty_in) ? 'color: red; font-weight: bold;' : '';
+
+                        tableHtml += `
+                        <tr style="${tClass}">
+                            <td style="padding: 5px; text-align: center;">${index + 1}</td>
+                            <td style="padding: 5px;">${item.brand || '-'}</td>
+                            <td style="padding: 5px;">${item.product || '-'}</td>
+                            <td style="padding: 5px;">${item.variant || '-'}</td>
+                            <td style="padding: 5px; mso-number-format:'\\@';">${item.code || '-'}</td>
+                            <td style="padding: 5px; text-align: center;">${qtyAwal}</td>
+                            <td style="padding: 5px; text-align: center;"><b>${item.qty_in}</b></td>
+                            <td style="padding: 5px; text-align: center; ${styleRevisi}">${qtyRevisiDisplay}</td>
+                            <td style="padding: 5px; text-align: center; color: ${isChanged ? 'red' : 'green'};">${perubahanText}</td>
+                            <td style="padding: 5px; font-weight: bold;">${status}</td>
+                            <td style="padding: 5px; text-align: center;">${kardus}</td>
+                            <td style="padding: 5px;">${ketSales}</td>
+                            <td style="padding: 5px;">${ketGudang}</td>
+                            <td style="padding: 5px;">${item.req_date || '-'}</td>
+                        </tr>`;
                     });
-                    dateColumns = Array.from(uniqueDates).sort();
+                } else if (type === 'penjualan') {
+                    
+                    let bazaarsList = DB.get('bazaars_list');
+                    let currentBazaarInfo = bazaarsList.find(b => b.name === targetBazaar);
+                    let dateColumns = [];
+                    
+                    if (currentBazaarInfo && currentBazaarInfo.start_date && currentBazaarInfo.end_date) {
+                        let curr = new Date(currentBazaarInfo.start_date + "T12:00:00Z");
+                        let end = new Date(currentBazaarInfo.end_date + "T12:00:00Z");
+                        while (curr <= end) {
+                            dateColumns.push(curr.toISOString().split('T')[0]);
+                            curr.setDate(curr.getDate() + 1);
+                        }
+                    }
+                    
+                    if (dateColumns.length === 0) {
+                        let uniqueDates = new Set();
+                        itemsToExport.forEach(item => {
+                            if (item.sales_history) {
+                                item.sales_history.forEach(h => uniqueDates.add(h.date));
+                            }
+                        });
+                        dateColumns = Array.from(uniqueDates).sort();
+                    }
+
+                    let dateHeaders = dateColumns.map(d => `<th style="padding: 10px;">Tgl ${d}</th>`).join('');
+
+                    tableHtml += `
+                    <thead style="background-color: #10b981; color: white; font-weight: bold;">
+                        <tr>
+                            <th style="padding: 10px;">No</th>
+                            <th style="padding: 10px;">Brand</th>
+                            <th style="padding: 10px;">Produk (Baju)</th>
+                            <th style="padding: 10px;">Variant</th>
+                            <th style="padding: 10px;">Kode Item</th>
+                            <th style="padding: 10px;">Total Dikirim Gudang (Stok Awal)</th>
+                            <th style="padding: 10px;">Revisi Qty Sales</th>
+                            <th style="padding: 10px;">Total Laku (Terjual)</th>
+                            <th style="padding: 10px;">Sisa Stok Berjalan</th>
+                            ${dateHeaders}
+                        </tr>
+                    </thead><tbody>`;
+
+                    itemsToExport.forEach((item, index) => {
+                        let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
+                        let sisa = actualQty - item.qty_sold;
+                        
+                        let dateCells = dateColumns.map(d => {
+                            let salesOnDate = 0;
+                            if (item.sales_history) {
+                                salesOnDate = item.sales_history.filter(h => h.date === d).reduce((sum, h) => sum + h.qty, 0);
+                            }
+                            return `<td style="padding: 5px; text-align: center;">${salesOnDate > 0 ? salesOnDate : '-'}</td>`;
+                        }).join('');
+
+                        tableHtml += `
+                        <tr>
+                            <td style="padding: 5px; text-align: center;">${index + 1}</td>
+                            <td style="padding: 5px;">${item.brand || '-'}</td>
+                            <td style="padding: 5px;">${item.product || '-'}</td>
+                            <td style="padding: 5px;">${item.variant || '-'}</td>
+                            <td style="padding: 5px; mso-number-format:'\\@';">${item.code || '-'}</td>
+                            <td style="padding: 5px; text-align: center;">${item.qty_in}</td>
+                            <td style="padding: 5px; text-align: center; color:var(--warning);">${item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : '-'}</td>
+                            <td style="padding: 5px; text-align: center; color: #10b981;"><b>${item.qty_sold}</b></td>
+                            <td style="padding: 5px; text-align: center; color: ${sisa === 0 ? 'red' : 'black'};"><b>${sisa}</b></td>
+                            ${dateCells}
+                        </tr>`;
+                    });
+
+                } else if (type === 'sokembali') {
+                    tableHtml += `
+                    <thead style="background-color: #f59e0b; color: white; font-weight: bold;">
+                        <tr>
+                            <th style="padding: 10px;">No</th>
+                            <th style="padding: 10px;">Brand</th>
+                            <th style="padding: 10px;">Produk (Baju)</th>
+                            <th style="padding: 10px;">Variant</th>
+                            <th style="padding: 10px;">Kode Item</th>
+                            <th style="padding: 10px;">Total Dikirim Gudang</th>
+                            <th style="padding: 10px;">Revisi Qty Sales</th>
+                            <th style="padding: 10px;">Total Laku (Terjual)</th>
+                            <th style="padding: 10px;">Sisa Sistem Berjalan</th>
+                            <th style="padding: 10px;">Fisik Kembali (Opname)</th>
+                            <th style="padding: 10px;">Selisih Opname</th>
+                            <th style="padding: 10px;">Status SO</th>
+                        </tr>
+                    </thead><tbody>`;
+
+                    itemsToExport.forEach((item, index) => {
+                        let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
+                        let sisa = actualQty - item.qty_sold;
+                        let fisik = item.status === 'done' ? item.fisik_kembali : 0;
+                        let selisih = item.status === 'done' ? (fisik - sisa) : 0;
+                        let statusSO = item.status === 'done' ? 'Selesai Opname' : 'Belum Opname';
+
+                        tableHtml += `
+                        <tr>
+                            <td style="padding: 5px; text-align: center;">${index + 1}</td>
+                            <td style="padding: 5px;">${item.brand || '-'}</td>
+                            <td style="padding: 5px;">${item.product || '-'}</td>
+                            <td style="padding: 5px;">${item.variant || '-'}</td>
+                            <td style="padding: 5px; mso-number-format:'\\@';">${item.code || '-'}</td>
+                            <td style="padding: 5px; text-align: center;">${item.qty_in}</td>
+                            <td style="padding: 5px; text-align: center; color:var(--warning);">${item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : '-'}</td>
+                            <td style="padding: 5px; text-align: center;">${item.qty_sold}</td>
+                            <td style="padding: 5px; text-align: center;"><b>${sisa}</b></td>
+                            <td style="padding: 5px; text-align: center; color: blue;"><b>${item.status === 'done' ? fisik : '-'}</b></td>
+                            <td style="padding: 5px; text-align: center; color: ${selisih < 0 ? 'red' : (selisih > 0 ? 'green' : 'black')};"><b>${item.status === 'done' ? selisih : '-'}</b></td>
+                            <td style="padding: 5px; font-weight: bold; color: ${item.status === 'done' ? 'green' : 'orange'};">${statusSO}</td>
+                        </tr>`;
+                    });
                 }
 
-                let dateHeaders = dateColumns.map(d => `<th style="padding: 10px;">Tgl ${d}</th>`).join('');
-
-                tableHtml += `
-                <thead style="background-color: #10b981; color: white; font-weight: bold;">
-                    <tr>
-                        <th style="padding: 10px;">No</th>
-                        <th style="padding: 10px;">Brand</th>
-                        <th style="padding: 10px;">Produk (Baju)</th>
-                        <th style="padding: 10px;">Variant</th>
-                        <th style="padding: 10px;">Kode Item</th>
-                        <th style="padding: 10px;">Total Dikirim Gudang (Stok Awal)</th>
-                        <th style="padding: 10px;">Revisi Qty Sales</th>
-                        <th style="padding: 10px;">Total Laku (Terjual)</th>
-                        <th style="padding: 10px;">Sisa Stok Berjalan</th>
-                        ${dateHeaders}
-                    </tr>
-                </thead><tbody>`;
-
-                itemsToExport.forEach((item, index) => {
-                    let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
-                    let sisa = actualQty - item.qty_sold;
-                    
-                    let dateCells = dateColumns.map(d => {
-                        let salesOnDate = 0;
-                        if (item.sales_history) {
-                            salesOnDate = item.sales_history.filter(h => h.date === d).reduce((sum, h) => sum + h.qty, 0);
-                        }
-                        return `<td style="padding: 5px; text-align: center;">${salesOnDate > 0 ? salesOnDate : '-'}</td>`;
-                    }).join('');
-
-                    tableHtml += `
-                    <tr>
-                        <td style="padding: 5px; text-align: center;">${index + 1}</td>
-                        <td style="padding: 5px;">${item.brand || '-'}</td>
-                        <td style="padding: 5px;">${item.product || '-'}</td>
-                        <td style="padding: 5px;">${item.variant || '-'}</td>
-                        <td style="padding: 5px; mso-number-format:'\\@';">${item.code || '-'}</td>
-                        <td style="padding: 5px; text-align: center;">${item.qty_in}</td>
-                        <td style="padding: 5px; text-align: center; color:var(--warning);">${item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : '-'}</td>
-                        <td style="padding: 5px; text-align: center; color: #10b981;"><b>${item.qty_sold}</b></td>
-                        <td style="padding: 5px; text-align: center; color: ${sisa === 0 ? 'red' : 'black'};"><b>${sisa}</b></td>
-                        ${dateCells}
-                    </tr>`;
-                });
-
-            } else if (type === 'sokembali') {
-                tableHtml += `
-                <thead style="background-color: #f59e0b; color: white; font-weight: bold;">
-                    <tr>
-                        <th style="padding: 10px;">No</th>
-                        <th style="padding: 10px;">Brand</th>
-                        <th style="padding: 10px;">Produk (Baju)</th>
-                        <th style="padding: 10px;">Variant</th>
-                        <th style="padding: 10px;">Kode Item</th>
-                        <th style="padding: 10px;">Total Dikirim Gudang</th>
-                        <th style="padding: 10px;">Revisi Qty Sales</th>
-                        <th style="padding: 10px;">Total Laku (Terjual)</th>
-                        <th style="padding: 10px;">Sisa Sistem Berjalan</th>
-                        <th style="padding: 10px;">Fisik Kembali (Opname)</th>
-                        <th style="padding: 10px;">Selisih Opname</th>
-                        <th style="padding: 10px;">Status SO</th>
-                    </tr>
-                </thead><tbody>`;
-
-                itemsToExport.forEach((item, index) => {
-                    let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
-                    let sisa = actualQty - item.qty_sold;
-                    let fisik = item.status === 'done' ? item.fisik_kembali : 0;
-                    let selisih = item.status === 'done' ? (fisik - sisa) : 0;
-                    let statusSO = item.status === 'done' ? 'Selesai Opname' : 'Belum Opname';
-
-                    tableHtml += `
-                    <tr>
-                        <td style="padding: 5px; text-align: center;">${index + 1}</td>
-                        <td style="padding: 5px;">${item.brand || '-'}</td>
-                        <td style="padding: 5px;">${item.product || '-'}</td>
-                        <td style="padding: 5px;">${item.variant || '-'}</td>
-                        <td style="padding: 5px; mso-number-format:'\\@';">${item.code || '-'}</td>
-                        <td style="padding: 5px; text-align: center;">${item.qty_in}</td>
-                        <td style="padding: 5px; text-align: center; color:var(--warning);">${item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : '-'}</td>
-                        <td style="padding: 5px; text-align: center;">${item.qty_sold}</td>
-                        <td style="padding: 5px; text-align: center;"><b>${sisa}</b></td>
-                        <td style="padding: 5px; text-align: center; color: blue;"><b>${item.status === 'done' ? fisik : '-'}</b></td>
-                        <td style="padding: 5px; text-align: center; color: ${selisih < 0 ? 'red' : (selisih > 0 ? 'green' : 'black')};"><b>${item.status === 'done' ? selisih : '-'}</b></td>
-                        <td style="padding: 5px; font-weight: bold; color: ${item.status === 'done' ? 'green' : 'orange'};">${statusSO}</td>
-                    </tr>`;
-                });
-            }
-
-            tableHtml += `</tbody></table></body></html>`;
-            
-            let blob = new Blob([tableHtml], { type: 'application/vnd.ms-excel' });
-            let url = URL.createObjectURL(blob);
-            let a = document.createElement("a");
-            a.href = url;
-            
-            let dateStr = new Date().toISOString().split('T')[0];
-            let safeName = targetBazaar.replace(/[^a-zA-Z0-9]/g, '_'); 
-            a.download = `Lap_${type.toUpperCase()}_${safeName}_${dateStr}.xls`;
-            
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
+                tableHtml += `</tbody></table></body></html>`;
+                
+                let blob = new Blob([tableHtml], { type: 'application/vnd.ms-excel' });
+                let url = URL.createObjectURL(blob);
+                let a = document.createElement("a");
+                a.href = url;
+                
+                let dateStr = new Date().toISOString().split('T')[0];
+                let safeName = targetBazaar.replace(/[^a-zA-Z0-9]/g, '_'); 
+                a.download = `Lap_${type.toUpperCase()}_${safeName}_${dateStr}.xls`;
+                
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                hideGlobalLoader();
+            }, 100);
         }
     </script>
 </body>
