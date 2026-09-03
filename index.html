@@ -16,7 +16,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
     
-    <!-- FIREBASE SDK (MODULAR) - SOLUSI 2 COLLECTIONS -->
+    <!-- FIREBASE SDK (MODULAR) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getFirestore, collection, doc, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot, enableIndexedDbPersistence, query, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
@@ -37,7 +37,8 @@
             console.warn("Offline mode persistence warning:", err.code);
         });
 
-        window.db = db; window.doc = doc; window.setDoc = setDoc; window.addDoc = addDoc; window.updateDoc = updateDoc; window.deleteDoc = deleteDoc; window.collection = collection; window.query = query; window.orderBy = orderBy; window.limit = limit;
+        // PERBAIKAN: Menambahkan window.onSnapshot yang sebelumnya terlewat
+        window.db = db; window.doc = doc; window.setDoc = setDoc; window.addDoc = addDoc; window.updateDoc = updateDoc; window.deleteDoc = deleteDoc; window.collection = collection; window.query = query; window.orderBy = orderBy; window.limit = limit; window.onSnapshot = onSnapshot;
         window.dispatchEvent(new Event('firebase-ready'));
     </script>
 
@@ -617,9 +618,10 @@
             master_inventory_date: localStorage.getItem('master_inventory_date') || ''
         };
         
-        let loadedCollectionsCount = 0; 
+        let loadedCollections = new Set(); // Mencegah penghitungan loading ganda
         const totalCollectionsToLoad = 5; 
         let currentActiveTab = ''; 
+        let isAppReady = false; // Mengunci layar loading agar hanya terpicu 1 kali
         
         // PENGATURAN PAGINATION (Lebih Ringan)
         const ITEMS_PER_PAGE = 20;
@@ -664,18 +666,11 @@
             }, 400); 
         }
 
-        // ADAPTOR KE FIREBASE COLLECTIONS
         const DB = {
             get: function(colName) { return window.appState[colName] || []; },
             runTx: async function(colName, updateFn) {
-                // Untuk kesederhanaan di Collections, kita ganti logic menjadi Promise.all 
-                // Karena data sudah tersinkronisasi di memori (window.appState)
                 let items = DB.get(colName);
-                let newItems = updateFn([...items]); // Duplikat array agar tidak merusak state asli
-                
-                let promises = [];
-                // Bandingkan dan cari perubahan, lalu update 
-                // Karena array penuh tidak lagi ditimpa 1 dokumen, kita gunakan metode direct call di fitur
+                let newItems = updateFn([...items]); 
                 return Promise.resolve(newItems);
             },
             runMultiTx: async function(updatesMap) {
@@ -687,45 +682,39 @@
             const collections = ['users', 'master_inventory', 'bazaar_items', 'bazaars_list'];
             
             collections.forEach(col => {
-                onSnapshot(collection(db, col), (snapshot) => {
+                window.onSnapshot(window.collection(db, col), (snapshot) => {
                     let fetchedItems = [];
                     snapshot.forEach(doc => {
                         fetchedItems.push({ _docId: doc.id, ...doc.data() });
                     });
                     
                     if (col === 'users' && fetchedItems.length === 0) {
-                        setDoc(doc(db, 'users', 'admin'), { username: 'admin', password: 'admin', departemen: 'Superadmin' });
+                        window.setDoc(window.doc(db, 'users', 'admin'), { username: 'admin', password: 'admin', departemen: 'Superadmin' });
                     }
                     
                     window.appState[col] = fetchedItems;
-                    
-                    if (loadedCollectionsCount < totalCollectionsToLoad) {
-                        loadedCollectionsCount++;
-                        checkInitialLoad();
-                    } else {
-                        debouncedRefreshUI();
-                    }
+                    loadedCollections.add(col);
+                    checkInitialLoad();
+                    if (isAppReady) debouncedRefreshUI(); 
                 });
             });
 
             // Activity Log di-limit 100 terakhir agar tidak berat
-            const logsQ = query(collection(db, 'activity_logs'), orderBy('id', 'desc'), limit(100));
-            onSnapshot(logsQ, (snapshot) => {
+            const logsQ = window.query(window.collection(db, 'activity_logs'), window.orderBy('id', 'desc'), window.limit(100));
+            window.onSnapshot(logsQ, (snapshot) => {
                 let fetchedLogs = [];
                 snapshot.forEach(doc => { fetchedLogs.push({ _docId: doc.id, ...doc.data() }); });
                 window.appState['activity_logs'] = fetchedLogs;
                 
-                if (loadedCollectionsCount < totalCollectionsToLoad) {
-                    loadedCollectionsCount++;
-                    checkInitialLoad();
-                } else {
-                    if(currentActiveTab === 'tab-log') renderLogs();
-                }
+                loadedCollections.add('activity_logs');
+                checkInitialLoad();
+                if (isAppReady && currentActiveTab === 'tab-log') renderLogs();
             });
         });
 
         function checkInitialLoad() {
-            if (loadedCollectionsCount === totalCollectionsToLoad) {
+            if (!isAppReady && loadedCollections.size === totalCollectionsToLoad) {
+                isAppReady = true;
                 document.getElementById('dbLoading').classList.add('hidden'); 
                 let savedUser = sessionStorage.getItem('loggedInUser');
                 
@@ -758,7 +747,7 @@
         async function logActivity(action, details) {
             if (!currentUser) return;
             try {
-                await addDoc(collection(db, 'activity_logs'), {
+                await window.addDoc(window.collection(db, 'activity_logs'), {
                     id: Date.now(),
                     timestamp: new Date().toLocaleString('id-ID'),
                     username: currentUser.username,
@@ -944,7 +933,7 @@
         function showRegister() { document.getElementById('loginSection').classList.add('hidden'); document.getElementById('registerSection').classList.remove('hidden'); }
 
         async function login() {
-            if (loadedCollectionsCount < totalCollectionsToLoad) return UI.alert("Loading", "Sistem sedang mengunduh data dari cloud, harap tunggu...", "warning");
+            if (loadedCollections.size < totalCollectionsToLoad) return UI.alert("Loading", "Sistem sedang mengunduh data dari cloud, harap tunggu...", "warning");
             let user = document.getElementById('loginUser').value.trim(); let pass = document.getElementById('loginPass').value; let users = DB.get('users');
             let validUser = users.find(u => u.username.toLowerCase() === user.toLowerCase() && u.password === pass);
             if(validUser) { 
@@ -960,7 +949,7 @@
             } else { await UI.alert("Gagal", "Username/Password salah.", "error"); }
         }
         async function register() {
-            if (loadedCollectionsCount < totalCollectionsToLoad) return UI.alert("Loading", "Sistem sedang mengunduh data dari cloud, harap tunggu...", "warning");
+            if (loadedCollections.size < totalCollectionsToLoad) return UI.alert("Loading", "Sistem sedang mengunduh data dari cloud, harap tunggu...", "warning");
             let user = document.getElementById('regUser').value.trim(); let pass = document.getElementById('regPass').value; let dept = document.getElementById('regDept').value;
             if(!user || !pass) return UI.alert("Peringatan", "Wajib diisi!", "warning");
             
@@ -968,7 +957,7 @@
             try {
                 let users = DB.get('users');
                 if(!users.find(u => u.username.toLowerCase() === user.toLowerCase())) {
-                    await setDoc(doc(db, 'users', user.toLowerCase()), { username: user, password: pass, departemen: dept });
+                    await window.setDoc(window.doc(db, 'users', user.toLowerCase()), { username: user, password: pass, departemen: dept });
                     hideGlobalLoader();
                     UI.alert("Berhasil", "Silakan login.", "success"); showLogin(); 
                 } else {
@@ -978,7 +967,7 @@
             } catch(e) { hideGlobalLoader(); console.error(e); }
         }
         async function lupaPassword() {
-            if (loadedCollectionsCount < totalCollectionsToLoad) return UI.alert("Loading", "Harap tunggu sistem selesai memuat data...", "warning");
+            if (loadedCollections.size < totalCollectionsToLoad) return UI.alert("Loading", "Harap tunggu sistem selesai memuat data...", "warning");
             let user = await UI.prompt("Lupa Password", "Masukkan Username:"); if (!user) return;
             let users = DB.get('users'); let uIdx = users.findIndex(u => u.username.toLowerCase() === user.trim().toLowerCase());
             if (uIdx === -1) return UI.alert("Error", "Username tidak ditemukan!", "error");
@@ -987,7 +976,7 @@
             showGlobalLoader();
             try {
                 let userItem = users[uIdx];
-                await updateDoc(doc(db, 'users', userItem._docId), { password: newPass });
+                await window.updateDoc(window.doc(db, 'users', userItem._docId), { password: newPass });
                 hideGlobalLoader();
                 UI.alert("Sukses", "Password diperbarui.", "success"); 
             } catch(e) { hideGlobalLoader(); console.error(e); }
@@ -1070,7 +1059,7 @@
                 try {
                     let bList = DB.get('bazaars_list');
                     if(!bList.find(b => b.name === bName)) {
-                        await setDoc(doc(db, 'bazaars_list', bName), {name: bName, start_date: bStart, end_date: bEnd});
+                        await window.setDoc(window.doc(db, 'bazaars_list', bName), {name: bName, start_date: bStart, end_date: bEnd});
                     }
                     logActivity('Buat Bazaar', `Membuat bazaar baru: ${bName} (${bStart} - ${bEnd})`);
                 } catch(e) { console.log(e); }
@@ -1130,7 +1119,7 @@
             try {
                 let promises = [];
                 codesToUpdate.forEach(d => {
-                    promises.push(updateDoc(doc(db, 'master_inventory', d.ref._docId), { total: d.ref.total - qty }));
+                    promises.push(window.updateDoc(window.doc(db, 'master_inventory', d.ref._docId), { total: d.ref.total - qty }));
                     
                     let existing = DB.get('bazaar_items').find(i => i.code === d.code && i.bazaar_name === activeBazaarName && i.status === 'active');
                     if (existing) {
@@ -1148,9 +1137,9 @@
                             updatedData.display_req_qty = (existing.display_req_qty || 0) + parsedDisplayQty;
                             updatedData.display_req_type = 'tambahan';
                         }
-                        promises.push(updateDoc(doc(db, 'bazaar_items', existing._docId), updatedData));
+                        promises.push(window.updateDoc(window.doc(db, 'bazaar_items', existing._docId), updatedData));
                     } else {
-                        promises.push(addDoc(collection(db, 'bazaar_items'), {
+                        promises.push(window.addDoc(window.collection(db, 'bazaar_items'), {
                             id: Date.now() + Math.random(), bazaar_name: activeBazaarName, brand: d.ref.brand, product: d.ref.product, variant: d.ref.variant, code: d.code, collection: d.ref.collection || "-", original_qty: qty, qty_in: qty, qty_sold: 0, status: 'active', fisik_kembali: 0, status_pengiriman: 'Menunggu Gudang', keterangan_gudang: '-', req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}), keterangan_sales: ketSales || "-", display_req_qty: isDisplay ? parsedDisplayQty : 0, display_req_type: isDisplay ? 'tambahan' : null 
                         }));
                     }
@@ -1221,7 +1210,7 @@
                 let bItems = DB.get('bazaar_items');
 
                 pendingUploadData.forEach(d => {
-                    promises.push(updateDoc(doc(db, 'master_inventory', d._mDocId), { total: d.maxStock - d.qty }));
+                    promises.push(window.updateDoc(window.doc(db, 'master_inventory', d._mDocId), { total: d.maxStock - d.qty }));
                     
                     let existing = bItems.find(i => i.code === d.code && i.bazaar_name === activeBazaarName && i.status === 'active');
                     let finalKet = d.ketSales || "-";
@@ -1247,9 +1236,9 @@
                             updatedData.display_req_qty = (existing.display_req_qty || 0) + parsedDisplayQty;
                             updatedData.display_req_type = 'tambahan';
                         }
-                        promises.push(updateDoc(doc(db, 'bazaar_items', existing._docId), updatedData));
+                        promises.push(window.updateDoc(window.doc(db, 'bazaar_items', existing._docId), updatedData));
                     } else { 
-                        promises.push(addDoc(collection(db, 'bazaar_items'), {
+                        promises.push(window.addDoc(window.collection(db, 'bazaar_items'), {
                             id: Date.now() + Math.random(), bazaar_name: activeBazaarName, brand: d.brand, product: d.product, variant: d.variant, code: d.code, collection: d.collection, original_qty: d.qty, qty_in: d.qty, qty_sold: 0, status: 'active', fisik_kembali: 0, status_pengiriman: 'Menunggu Gudang', keterangan_gudang: '-', req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}), keterangan_sales: finalKet, display_req_qty: isDisplay ? parsedDisplayQty : 0, display_req_type: isDisplay ? 'tambahan' : null 
                         }));
                     }
@@ -1413,7 +1402,7 @@
             showGlobalLoader();
             try {
                 let promises = [];
-                promises.push(updateDoc(doc(db, 'bazaar_items', item._docId), {
+                promises.push(window.updateDoc(window.doc(db, 'bazaar_items', item._docId), {
                     status_pengiriman: statusPengiriman,
                     kardus: finalKardus,
                     keterangan_gudang: finalKet,
@@ -1422,7 +1411,7 @@
 
                 if (diffStore !== 0) {
                     let mItem = invItems.find(m => m.code === item.code);
-                    if(mItem) promises.push(updateDoc(doc(db, 'master_inventory', mItem._docId), { total: mItem.total + diffStore }));
+                    if(mItem) promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: mItem.total + diffStore }));
                 }
 
                 await Promise.all(promises);
@@ -1447,7 +1436,7 @@
                 let item = DB.get('bazaar_items').find(i => String(i.id) === String(id));
                 if(item) {
                     try {
-                        await updateDoc(doc(db, 'bazaar_items', item._docId), { status_pengiriman: 'Diterima Sales', qty_revisi_sales: item.qty_in });
+                        await window.updateDoc(window.doc(db, 'bazaar_items', item._docId), { status_pengiriman: 'Diterima Sales', qty_revisi_sales: item.qty_in });
                         logActivity('Terima Barang', `Menerima barang sesuai sistem gudang`);
                     } catch(e) { console.log(e); }
                 }
@@ -1476,7 +1465,7 @@
             try {
                 let promises = [];
                 let prevNote = (itemRef.keterangan_sales && itemRef.keterangan_sales !== "-") ? itemRef.keterangan_sales + " | " : "";
-                promises.push(updateDoc(doc(db, 'bazaar_items', itemRef._docId), {
+                promises.push(window.updateDoc(window.doc(db, 'bazaar_items', itemRef._docId), {
                     qty_revisi_sales: newQty,
                     status_pengiriman: 'Diterima Sales (Revisi)',
                     keterangan_sales: prevNote + `Revisi Terima: ${newQty} pcs (${note || 'Tanpa keterangan'})`
@@ -1484,7 +1473,7 @@
 
                 if (diffStore !== 0) {
                     let mItem = DB.get('master_inventory').find(m => m.code === itemRef.code);
-                    if(mItem) promises.push(updateDoc(doc(db, 'master_inventory', mItem._docId), { total: mItem.total + diffStore }));
+                    if(mItem) promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: mItem.total + diffStore }));
                 }
 
                 await Promise.all(promises);
@@ -1511,7 +1500,7 @@
             try {
                 let sHist = itemRef.sales_history || [];
                 sHist.push({ date: res.date, qty: res.qty });
-                await updateDoc(doc(db, 'bazaar_items', itemRef._docId), {
+                await window.updateDoc(window.doc(db, 'bazaar_items', itemRef._docId), {
                     qty_sold: itemRef.qty_sold + res.qty,
                     sales_history: sHist
                 });
@@ -1534,10 +1523,10 @@
                 try {
                     let promises = [];
                     let mItem = DB.get('master_inventory').find(m => m.code === item.code);
-                    if(mItem) promises.push(updateDoc(doc(db, 'master_inventory', mItem._docId), { total: mItem.total - reqQty }));
+                    if(mItem) promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: mItem.total - reqQty }));
 
                     let prevNote = (item.keterangan_sales && item.keterangan_sales !== "-") ? item.keterangan_sales + " | " : "";
-                    promises.push(updateDoc(doc(db, 'bazaar_items', item._docId), {
+                    promises.push(window.updateDoc(window.doc(db, 'bazaar_items', item._docId), {
                         original_qty: item.original_qty + reqQty,
                         qty_in: item.qty_in + reqQty,
                         status_pengiriman: 'Menunggu Refill Gudang',
@@ -1558,7 +1547,7 @@
                  }
                  try {
                      let prevNote = (item.keterangan_sales && item.keterangan_sales !== "-") ? item.keterangan_sales + " | " : "";
-                     await updateDoc(doc(db, 'bazaar_items', item._docId), {
+                     await window.updateDoc(window.doc(db, 'bazaar_items', item._docId), {
                         keterangan_sales: prevNote + `[KARDUS DISPLAY: ${reqQty} pcs]`,
                         display_req_qty: reqQty,
                         display_req_type: 'catatan'
@@ -1586,9 +1575,9 @@
 
                 if (item.display_req_type === 'tambahan') {
                     let mItem = DB.get('master_inventory').find(m => m.code === item.code);
-                    if(mItem) promises.push(updateDoc(doc(db, 'master_inventory', mItem._docId), { total: mItem.total + item.display_req_qty }));
+                    if(mItem) promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: mItem.total + item.display_req_qty }));
                     
-                    promises.push(updateDoc(doc(db, 'bazaar_items', item._docId), {
+                    promises.push(window.updateDoc(window.doc(db, 'bazaar_items', item._docId), {
                         original_qty: item.original_qty - item.display_req_qty,
                         qty_in: item.qty_in - item.display_req_qty,
                         keterangan_sales: newKet,
@@ -1596,7 +1585,7 @@
                         display_req_type: null
                     }));
                 } else {
-                    promises.push(updateDoc(doc(db, 'bazaar_items', item._docId), {
+                    promises.push(window.updateDoc(window.doc(db, 'bazaar_items', item._docId), {
                         keterangan_sales: newKet,
                         display_req_qty: 0,
                         display_req_type: null
@@ -1619,7 +1608,7 @@
             
             showGlobalLoader();
             try {
-                await updateDoc(doc(db, 'bazaar_items', itemRef._docId), { fisik_kembali: fisik, status: 'done' });
+                await window.updateDoc(window.doc(db, 'bazaar_items', itemRef._docId), { fisik_kembali: fisik, status: 'done' });
                 logActivity('Stock Opname', `SO kode: ${itemRef.code} dengan stok fisik: ${fisik}`);
                 hideGlobalLoader();
                 UI.alert("Sukses", "Opname disimpan", "success");
@@ -1629,20 +1618,20 @@
         async function hapusBazaarData(bName) {
             let itemsToRemove = DB.get('bazaar_items').filter(i => i.bazaar_name === bName && i.status === 'active');
             let promises = [];
-            promises.push(deleteDoc(doc(db, 'bazaars_list', bName)));
+            promises.push(window.deleteDoc(window.doc(db, 'bazaars_list', bName)));
             
             itemsToRemove.forEach(item => { 
-                promises.push(deleteDoc(doc(db, 'bazaar_items', item._docId)));
+                promises.push(window.deleteDoc(window.doc(db, 'bazaar_items', item._docId)));
                 let mItem = DB.get('master_inventory').find(m => m.code === item.code); 
                 if(mItem) {
                     let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
-                    promises.push(updateDoc(doc(db, 'master_inventory', mItem._docId), { total: mItem.total + (actualQty - item.qty_sold) }));
+                    promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: mItem.total + (actualQty - item.qty_sold) }));
                 }
             });
             await Promise.all(promises);
         }
-        async function hapusBazaarSales() { let sel = document.getElementById('salesBazaarSelect').value; if(!sel || sel === 'NEW') return; let conf = await UI.confirm("Hapus?", "Yakin hapus bazaar?", "error"); if(conf) { showGlobalLoader(); try{ await hapusBazaarData(sel); logActivity('Hapus Bazaar', `Sales menghapus bazaar: ${sel}`); populateSalesBazaarDropdown(); hideGlobalLoader(); UI.alert("Sukses", "Bazaar dihapus", "success"); } catch(e){ hideGlobalLoader(); console.error(e);} } }
-        async function hapusBazaarAdmin(bName) { let conf = await UI.confirm("Hapus?", `Yakin hapus ${bName}?`, "error"); if(conf) { showGlobalLoader(); try{ await hapusBazaarData(bName); logActivity('Hapus Bazaar', `Superadmin menghapus bazaar: ${bName}`); hideGlobalLoader(); UI.alert("Sukses", "Terhapus", "success"); } catch(e){ hideGlobalLoader(); console.error(e);} } }
+        async function hapusBazaarSales() { let sel = document.getElementById('salesBazaarSelect').value; if(!sel || sel === 'NEW') return; let conf = await UI.confirm("Hapus?", "Yakin hapus bazaar?", "error"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus Bazaar', `Sales menghapus bazaar: ${sel}`); await hapusBazaarData(sel); populateSalesBazaarDropdown(); hideGlobalLoader(); UI.alert("Sukses", "Bazaar dihapus", "success"); }, 100); } }
+        async function hapusBazaarAdmin(bName) { let conf = await UI.confirm("Hapus?", `Yakin hapus ${bName}?`, "error"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus Bazaar', `Superadmin menghapus bazaar: ${bName}`); await hapusBazaarData(bName); hideGlobalLoader(); UI.alert("Sukses", "Terhapus", "success"); }, 100); } }
         
         async function hapusBarang(id) { 
             let itemRef = DB.get('bazaar_items').find(i => String(i.id) === String(id)); if(!itemRef) return; 
@@ -1651,11 +1640,11 @@
             showGlobalLoader();
             try {
                 let promises = [];
-                promises.push(deleteDoc(doc(db, 'bazaar_items', itemRef._docId)));
+                promises.push(window.deleteDoc(window.doc(db, 'bazaar_items', itemRef._docId)));
                 let mItem = DB.get('master_inventory').find(m => m.code === itemRef.code); 
                 if(mItem) {
                     let actualQty = itemRef.qty_revisi_sales !== undefined ? itemRef.qty_revisi_sales : itemRef.qty_in;
-                    promises.push(updateDoc(doc(db, 'master_inventory', mItem._docId), { total: mItem.total + (actualQty - itemRef.qty_sold) }));
+                    promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: mItem.total + (actualQty - itemRef.qty_sold) }));
                 }
                 await Promise.all(promises);
                 logActivity('Hapus Barang', `Menghapus permintaan barang kode: ${itemRef.code}`);
@@ -1672,11 +1661,11 @@
             try {
                 let promises = [];
                 itemsToRemove.forEach(item => { 
-                    promises.push(deleteDoc(doc(db, 'bazaar_items', item._docId)));
+                    promises.push(window.deleteDoc(window.doc(db, 'bazaar_items', item._docId)));
                     let mItem = DB.get('master_inventory').find(m => m.code === item.code); 
                     if(mItem) {
                         let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
-                        promises.push(updateDoc(doc(db, 'master_inventory', mItem._docId), { total: mItem.total + (actualQty - item.qty_sold) }));
+                        promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: mItem.total + (actualQty - item.qty_sold) }));
                     }
                 });
                 await Promise.all(promises);
@@ -1691,7 +1680,7 @@
             if(conf) { 
                 showGlobalLoader(); 
                 let item = DB.get('bazaar_items').find(i => String(i.id) === String(id));
-                if(item) await deleteDoc(doc(db, 'bazaar_items', item._docId));
+                if(item) await window.deleteDoc(window.doc(db, 'bazaar_items', item._docId));
                 logActivity('Hapus Riwayat', `Menghapus satu riwayat opname`); 
                 hideGlobalLoader(); 
             } 
@@ -1701,7 +1690,7 @@
             if(conf) { 
                 showGlobalLoader(); 
                 let toDelete = DB.get('bazaar_items').filter(i => i.status === 'done');
-                let promises = toDelete.map(item => deleteDoc(doc(db, 'bazaar_items', item._docId)));
+                let promises = toDelete.map(item => window.deleteDoc(window.doc(db, 'bazaar_items', item._docId)));
                 await Promise.all(promises);
                 logActivity('Hapus Semua Riwayat', `Mengosongkan semua riwayat opname`); 
                 hideGlobalLoader(); 
@@ -1942,7 +1931,7 @@
             let bazaars = DB.get('bazaars_list'); let tbodyB = document.getElementById('tableBodyBazaarsAdmin');
             if(tbodyB) tbodyB.innerHTML = bazaars.map(b => `<tr><td>${b.name}</td><td>${b.start_date}</td><td><button class="btn-danger" onclick="hapusBazaarAdmin('${b.name}')">Hapus</button></td></tr>`).join('');
         }
-        async function hapusUser(username) { let conf = await UI.confirm("Hapus?", `Hapus ${username}?`, "warning"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus User', `Menghapus user: ${username}`); await deleteDoc(doc(db, 'users', username.toLowerCase())); hideGlobalLoader(); UI.alert("Sukses", "User dihapus.", "success"); }, 100); } }
+        async function hapusUser(username) { let conf = await UI.confirm("Hapus?", `Hapus ${username}?`, "warning"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus User', `Menghapus user: ${username}`); await window.deleteDoc(window.doc(db, 'users', username.toLowerCase())); hideGlobalLoader(); UI.alert("Sukses", "User dihapus.", "success"); }, 100); } }
         
         async function tambahMasterManual() {
             let brand = document.getElementById('masBrand').value.trim();
@@ -1970,7 +1959,7 @@
 
             showGlobalLoader();
             try {
-                await setDoc(doc(db, 'master_inventory', code), newData);
+                await window.setDoc(window.doc(db, 'master_inventory', code), newData);
                 logActivity('Tambah Master Manual', `Menambah/Update manual produk kode: ${code}`);
                 localStorage.setItem('master_inventory_date', new Date().toLocaleString());
                 hideGlobalLoader();
@@ -2004,7 +1993,7 @@
                             let total = btk + gu + grec + gtok + gweb;
                             
                             let newData = { brand: (c[0]||'').trim(), product: (c[1]||'').trim(), variant: (c[2]||'').trim(), code: code, collection: (c[4]||'').trim(), btk: btk, gu: gu, grec: grec, gtok: gtok, gweb: gweb, total: total };
-                            promises.push(setDoc(doc(db, 'master_inventory', code), newData));
+                            promises.push(window.setDoc(window.doc(db, 'master_inventory', code), newData));
                         }
                     }
                     await Promise.all(promises);
@@ -2023,7 +2012,7 @@
             if(conf) { 
                 showGlobalLoader(); 
                 let inv = DB.get('master_inventory');
-                let promises = inv.map(i => deleteDoc(doc(db, 'master_inventory', i._docId)));
+                let promises = inv.map(i => window.deleteDoc(window.doc(db, 'master_inventory', i._docId)));
                 await Promise.all(promises);
                 logActivity('Kosongkan Master', `Menghapus seluruh Master Inventory Data`); 
                 hideGlobalLoader(); 
