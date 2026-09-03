@@ -8,7 +8,6 @@
     <link rel="manifest" href="./manifest.json">
     <meta name="theme-color" content="#1e1b4b">
 
-    <!-- META TAG KHUSUS iOS (APPLE) -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Z&S Hub">
@@ -17,10 +16,10 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
     
-    <!-- FIREBASE SDK (MODULAR) -->
+    <!-- FIREBASE SDK (MODULAR) - SOLUSI 2 COLLECTIONS -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getFirestore, doc, setDoc, onSnapshot, enableIndexedDbPersistence, runTransaction } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getFirestore, collection, doc, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot, enableIndexedDbPersistence, query, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyCv-wlyi4DXxhA-z5mI52-8DeLxpwLaNj8",
@@ -38,7 +37,7 @@
             console.warn("Offline mode persistence warning:", err.code);
         });
 
-        window.db = db; window.doc = doc; window.setDoc = setDoc; window.onSnapshot = onSnapshot; window.runTransaction = runTransaction;
+        window.db = db; window.doc = doc; window.setDoc = setDoc; window.addDoc = addDoc; window.updateDoc = updateDoc; window.deleteDoc = deleteDoc; window.collection = collection; window.query = query; window.orderBy = orderBy; window.limit = limit;
         window.dispatchEvent(new Event('firebase-ready'));
     </script>
 
@@ -190,7 +189,7 @@
     <div id="dbLoading">
         <div class="modern-spinner" style="width: 60px; height: 60px; border-width: 6px;"></div>
         <h2 style="color:var(--primary); margin-top:20px; margin-bottom:5px;">Sinkronisasi Sistem</h2>
-        <p class="info-text">Menghubungkan ke Cloud Database...</p>
+        <p class="info-text">Menghubungkan ke Cloud Database Collections...</p>
     </div>
 
     <!-- UI ALERT & PROMPT MODAL -->
@@ -314,7 +313,7 @@
                 <button class="btn-danger" onclick="closeScanner()" style="padding: 4px 10px; font-size: 0.75rem;">Tutup</button>
             </div>
             <div id="qr-reader" style="width: 100%; border-radius: 8px; overflow: hidden; border: 2px dashed var(--border);"></div>
-            <p class="info-text" style="margin-top: 10px;">Pemindai telah dioptimalkan untuk baca cepat dari jarak jauh. Hasil scan akan langsung ditampilkan di layar Anda.</p>
+            <p class="info-text" style="margin-top: 10px;">Pemindai telah dioptimalkan untuk baca cepat dari jarak jauh. Hasil scan akan langsung difilter di layar Anda.</p>
         </div>
     </div>
 
@@ -665,81 +664,87 @@
             }, 400); 
         }
 
+        // ADAPTOR KE FIREBASE COLLECTIONS
         const DB = {
             get: function(colName) { return window.appState[colName] || []; },
-            set: function(colName, itemsArray) {
-                if (!window.db) return;
-                window.setDoc(window.doc(window.db, "appData", colName), { items: itemsArray })
-                    .catch(e => console.error("Firebase Sync Error:", e));
-            },
             runTx: async function(colName, updateFn) {
-                const docRef = window.doc(window.db, "appData", colName);
-                return window.runTransaction(window.db, async (tx) => {
-                    const snap = await tx.get(docRef);
-                    let items = snap.exists() ? snap.data().items || [] : [];
-                    let newItems = updateFn(items);
-                    tx.set(docRef, { items: newItems }, { merge: true });
-                });
+                // Untuk kesederhanaan di Collections, kita ganti logic menjadi Promise.all 
+                // Karena data sudah tersinkronisasi di memori (window.appState)
+                let items = DB.get(colName);
+                let newItems = updateFn([...items]); // Duplikat array agar tidak merusak state asli
+                
+                let promises = [];
+                // Bandingkan dan cari perubahan, lalu update 
+                // Karena array penuh tidak lagi ditimpa 1 dokumen, kita gunakan metode direct call di fitur
+                return Promise.resolve(newItems);
             },
             runMultiTx: async function(updatesMap) {
-                return window.runTransaction(window.db, async (tx) => {
-                    let snaps = {}; let refs = {};
-                    for (let col in updatesMap) {
-                        refs[col] = window.doc(window.db, "appData", col);
-                        snaps[col] = await tx.get(refs[col]);
-                    }
-                    for (let col in updatesMap) {
-                        let items = snaps[col].exists() ? snaps[col].data().items || [] : [];
-                        let newItems = updatesMap[col](items);
-                        tx.set(refs[col], { items: newItems }, { merge: true });
-                    }
-                });
+                return Promise.resolve();
             }
         };
 
         window.addEventListener('firebase-ready', () => {
-            const collections = ['users', 'master_inventory', 'bazaar_items', 'bazaars_list', 'activity_logs'];
+            const collections = ['users', 'master_inventory', 'bazaar_items', 'bazaars_list'];
             
             collections.forEach(col => {
-                window.onSnapshot(window.doc(window.db, "appData", col), (docSnap) => {
+                onSnapshot(collection(db, col), (snapshot) => {
                     let fetchedItems = [];
-                    if (docSnap.exists()) {
-                        fetchedItems = docSnap.data().items || [];
-                    }
+                    snapshot.forEach(doc => {
+                        fetchedItems.push({ _docId: doc.id, ...doc.data() });
+                    });
                     
                     if (col === 'users' && fetchedItems.length === 0) {
-                        fetchedItems = [{ username: 'admin', password: 'admin', departemen: 'Superadmin' }];
-                        DB.set('users', fetchedItems); 
+                        setDoc(doc(db, 'users', 'admin'), { username: 'admin', password: 'admin', departemen: 'Superadmin' });
                     }
                     
                     window.appState[col] = fetchedItems;
                     
                     if (loadedCollectionsCount < totalCollectionsToLoad) {
                         loadedCollectionsCount++;
-                        if (loadedCollectionsCount === totalCollectionsToLoad) {
-                            document.getElementById('dbLoading').classList.add('hidden'); 
-                            let savedUser = sessionStorage.getItem('loggedInUser');
-                            
-                            if(savedUser && window.appState['users']) {
-                                let parsedUser = JSON.parse(savedUser);
-                                let isUserStillExists = window.appState['users'].find(u => u.username === parsedUser.username && u.password === parsedUser.password);
-                                
-                                if(isUserStillExists) {
-                                    currentUser = parsedUser;
-                                    showDashboard();
-                                } else {
-                                    sessionStorage.removeItem('loggedInUser');
-                                    showLogin();
-                                }
-                            } else {
-                                showLogin();
-                            }
-                        }
+                        checkInitialLoad();
+                    } else {
+                        debouncedRefreshUI();
                     }
-                    debouncedRefreshUI(); 
                 });
             });
+
+            // Activity Log di-limit 100 terakhir agar tidak berat
+            const logsQ = query(collection(db, 'activity_logs'), orderBy('id', 'desc'), limit(100));
+            onSnapshot(logsQ, (snapshot) => {
+                let fetchedLogs = [];
+                snapshot.forEach(doc => { fetchedLogs.push({ _docId: doc.id, ...doc.data() }); });
+                window.appState['activity_logs'] = fetchedLogs;
+                
+                if (loadedCollectionsCount < totalCollectionsToLoad) {
+                    loadedCollectionsCount++;
+                    checkInitialLoad();
+                } else {
+                    if(currentActiveTab === 'tab-log') renderLogs();
+                }
+            });
         });
+
+        function checkInitialLoad() {
+            if (loadedCollectionsCount === totalCollectionsToLoad) {
+                document.getElementById('dbLoading').classList.add('hidden'); 
+                let savedUser = sessionStorage.getItem('loggedInUser');
+                
+                if(savedUser && window.appState['users']) {
+                    let parsedUser = JSON.parse(savedUser);
+                    let isUserStillExists = window.appState['users'].find(u => u.username === parsedUser.username && u.password === parsedUser.password);
+                    
+                    if(isUserStillExists) {
+                        currentUser = parsedUser;
+                        showDashboard();
+                    } else {
+                        sessionStorage.removeItem('loggedInUser');
+                        showLogin();
+                    }
+                } else {
+                    showLogin();
+                }
+            }
+        }
 
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => { 
@@ -752,18 +757,24 @@
         // ==========================================
         async function logActivity(action, details) {
             if (!currentUser) return;
-            DB.runTx('activity_logs', (logs) => {
-                logs.push({ id: Date.now(), timestamp: new Date().toLocaleString('id-ID'), username: currentUser.username, role: currentUser.departemen, action: action, details: details });
-                if (logs.length > 1000) logs = logs.slice(-1000);
-                return logs;
-            });
+            try {
+                await addDoc(collection(db, 'activity_logs'), {
+                    id: Date.now(),
+                    timestamp: new Date().toLocaleString('id-ID'),
+                    username: currentUser.username,
+                    role: currentUser.departemen,
+                    action: action,
+                    details: details
+                });
+            } catch(e) { console.log(e); }
         }
 
         function renderLogs() {
             let logs = DB.get('activity_logs');
             let tbody = document.getElementById('tableBodyLogs');
             if(tbody) {
-                let limitedLogs = logs.slice(-50).reverse();
+                // Limit ke 50 di UI
+                let limitedLogs = logs.slice(0, 50); 
                 tbody.innerHTML = limitedLogs.map(l => `<tr>
                     <td>${l.timestamp}</td>
                     <td><strong>${l.username}</strong></td>
@@ -771,9 +782,6 @@
                     <td><strong>${l.action}</strong></td>
                     <td>${l.details}</td>
                 </tr>`).join('');
-                if(logs.length > 50) {
-                    tbody.innerHTML += `<tr><td colspan="5" style="text-align:center; padding:15px; color:var(--info); background:#eff6ff;">Menampilkan 50 aktivitas terbaru.</td></tr>`;
-                }
             }
         }
 
@@ -846,7 +854,7 @@
         };
 
         // ==========================================
-        // SCANNER LOGIC 
+        // SCANNER LOGIC (Kamera lebih ringan & Auto Filter Cepat)
         // ==========================================
         let html5QrcodeScanner;
         function openScanner(actionType) {
@@ -957,15 +965,17 @@
             if(!user || !pass) return UI.alert("Peringatan", "Wajib diisi!", "warning");
             
             showGlobalLoader();
-            DB.runTx('users', (users) => {
+            try {
+                let users = DB.get('users');
                 if(!users.find(u => u.username.toLowerCase() === user.toLowerCase())) {
-                    users.push({ username: user, password: pass, departemen: dept });
+                    await setDoc(doc(db, 'users', user.toLowerCase()), { username: user, password: pass, departemen: dept });
+                    hideGlobalLoader();
+                    UI.alert("Berhasil", "Silakan login.", "success"); showLogin(); 
+                } else {
+                    hideGlobalLoader();
+                    UI.alert("Gagal", "Username sudah digunakan.", "error");
                 }
-                return users;
-            }).then(() => { 
-                hideGlobalLoader();
-                UI.alert("Berhasil", "Silakan login.", "success"); showLogin(); 
-            });
+            } catch(e) { hideGlobalLoader(); console.error(e); }
         }
         async function lupaPassword() {
             if (loadedCollectionsCount < totalCollectionsToLoad) return UI.alert("Loading", "Harap tunggu sistem selesai memuat data...", "warning");
@@ -975,14 +985,12 @@
             let newPass = await UI.prompt("Reset Password", `Masukkan password BARU:`); if (!newPass) return;
             
             showGlobalLoader();
-            DB.runTx('users', (usersObj) => {
-                let idx = usersObj.findIndex(u => u.username.toLowerCase() === user.trim().toLowerCase());
-                if(idx !== -1) usersObj[idx].password = newPass;
-                return usersObj;
-            }).then(() => { 
+            try {
+                let userItem = users[uIdx];
+                await updateDoc(doc(db, 'users', userItem._docId), { password: newPass });
                 hideGlobalLoader();
                 UI.alert("Sukses", "Password diperbarui.", "success"); 
-            });
+            } catch(e) { hideGlobalLoader(); console.error(e); }
         }
         async function logout() { 
             let conf = await UI.confirm("Keluar?", "Yakin keluar?", "question"); 
@@ -1059,11 +1067,13 @@
                 if(!bName || !bStart || !bEnd) return UI.alert("Belum Lengkap", "Isi semua form!", "warning");
                 if(new Date(bStart) > new Date(bEnd)) return UI.alert("Salah", "Tanggal salah.", "error");
                 
-                DB.runTx('bazaars_list', (bazaars) => {
-                    if(!bazaars.find(b => b.name === bName)) bazaars.push({name: bName, start_date: bStart, end_date: bEnd});
-                    return bazaars;
-                });
-                logActivity('Buat Bazaar', `Membuat bazaar baru: ${bName} (${bStart} - ${bEnd})`);
+                try {
+                    let bList = DB.get('bazaars_list');
+                    if(!bList.find(b => b.name === bName)) {
+                        await setDoc(doc(db, 'bazaars_list', bName), {name: bName, start_date: bStart, end_date: bEnd});
+                    }
+                    logActivity('Buat Bazaar', `Membuat bazaar baru: ${bName} (${bStart} - ${bEnd})`);
+                } catch(e) { console.log(e); }
             } else { bName = s; if(!bName) return UI.alert("Kosong", "Pilih Bazaar!", "warning"); }
             activeBazaarName = bName; sessionStorage.setItem('activeBazaarName', bName); showDashboard();
         }
@@ -1117,40 +1127,41 @@
             }
             
             showGlobalLoader();
-            DB.runMultiTx({
-                'master_inventory': (invItems) => {
-                    codesToUpdate.forEach(d => {
-                        let mIdx = invItems.findIndex(m => m.code === d.code);
-                        if(mIdx !== -1) invItems[mIdx].total -= qty;
-                    });
-                    return invItems;
-                },
-                'bazaar_items': (bItems) => {
-                    codesToUpdate.forEach(d => {
-                        let existingIdx = bItems.findIndex(i => i.code === d.code && i.bazaar_name === activeBazaarName && i.status === 'active');
-                        if (existingIdx !== -1) {
-                            bItems[existingIdx].original_qty += qty; bItems[existingIdx].qty_in += qty; 
-                            bItems[existingIdx].status_pengiriman = 'Menunggu Refill Gudang'; 
-                            bItems[existingIdx].req_date = new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}); 
-                            bItems[existingIdx].keterangan_gudang = '-';
-                            if (ketSales) bItems[existingIdx].keterangan_sales = ketSales;
-                            
-                            if (isDisplay) {
-                                bItems[existingIdx].display_req_qty = (bItems[existingIdx].display_req_qty || 0) + parsedDisplayQty;
-                                bItems[existingIdx].display_req_type = 'tambahan';
-                            }
-                        } else {
-                            bItems.push({ id: Date.now() + Math.random(), bazaar_name: activeBazaarName, brand: d.ref.brand, product: d.ref.product, variant: d.ref.variant, code: d.code, collection: d.ref.collection || "-", original_qty: qty, qty_in: qty, qty_sold: 0, status: 'active', fisik_kembali: 0, status_pengiriman: 'Menunggu Gudang', keterangan_gudang: '-', req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}), keterangan_sales: ketSales || "-", display_req_qty: isDisplay ? parsedDisplayQty : 0, display_req_type: isDisplay ? 'tambahan' : null });
+            try {
+                let promises = [];
+                codesToUpdate.forEach(d => {
+                    promises.push(updateDoc(doc(db, 'master_inventory', d.ref._docId), { total: d.ref.total - qty }));
+                    
+                    let existing = DB.get('bazaar_items').find(i => i.code === d.code && i.bazaar_name === activeBazaarName && i.status === 'active');
+                    if (existing) {
+                        let finalKet = ketSales || "-";
+                        let prevNote = (existing.keterangan_sales && existing.keterangan_sales !== "-") ? existing.keterangan_sales + " | " : "";
+                        let updatedData = {
+                            original_qty: existing.original_qty + qty,
+                            qty_in: existing.qty_in + qty,
+                            status_pengiriman: 'Menunggu Refill Gudang',
+                            req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}),
+                            keterangan_gudang: '-',
+                            keterangan_sales: finalKet !== "-" ? prevNote + finalKet : existing.keterangan_sales
+                        };
+                        if (isDisplay) {
+                            updatedData.display_req_qty = (existing.display_req_qty || 0) + parsedDisplayQty;
+                            updatedData.display_req_type = 'tambahan';
                         }
-                    });
-                    return bItems;
-                }
-            }).then(() => {
+                        promises.push(updateDoc(doc(db, 'bazaar_items', existing._docId), updatedData));
+                    } else {
+                        promises.push(addDoc(collection(db, 'bazaar_items'), {
+                            id: Date.now() + Math.random(), bazaar_name: activeBazaarName, brand: d.ref.brand, product: d.ref.product, variant: d.ref.variant, code: d.code, collection: d.ref.collection || "-", original_qty: qty, qty_in: qty, qty_sold: 0, status: 'active', fisik_kembali: 0, status_pengiriman: 'Menunggu Gudang', keterangan_gudang: '-', req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}), keterangan_sales: ketSales || "-", display_req_qty: isDisplay ? parsedDisplayQty : 0, display_req_type: isDisplay ? 'tambahan' : null 
+                        }));
+                    }
+                });
+                await Promise.all(promises);
+                
                 logActivity('Request Barang', `Meminta manual sebanyak ${qty} pcs untuk bazaar ${activeBazaarName}`);
                 hideGlobalLoader();
                 UI.alert("Berhasil", "Menunggu Gudang.", "success");
                 document.getElementById('itemQty').value = ''; document.getElementById('itemKeterangan').value = ''; document.getElementById('productSelect').value = ''; renderVariants();
-            });
+            } catch(e) { hideGlobalLoader(); console.error(e); }
         }
 
         // CSV SALES PARSE
@@ -1177,7 +1188,7 @@
                 pendingUploadData = [];
                 for(let k in csvDataMap) { 
                     let item = csvDataMap[k]; let invIdx = inv.findIndex(i => i.code.toLowerCase() === k); 
-                    if(invIdx !== -1) pendingUploadData.push({ invIdx: invIdx, brand: item.brand, product: item.product, variant: item.variant, code: item.originalCode, collection: item.collection, qty: item.qty, ketSales: item.ketSales, maxStock: inv[invIdx].total, isValid: item.qty <= inv[invIdx].total }); 
+                    if(invIdx !== -1) pendingUploadData.push({ invIdx: invIdx, brand: item.brand, product: item.product, variant: item.variant, code: item.originalCode, collection: item.collection, qty: item.qty, ketSales: item.ketSales, maxStock: inv[invIdx].total, isValid: item.qty <= inv[invIdx].total, _mDocId: inv[invIdx]._docId }); 
                     else errorMsgs.push(`Code "${item.originalCode}" tidak ditemukan.`); 
                 }
                 if(pendingUploadData.length === 0) return UI.alert("Gagal", "Tidak ada data valid.", "error"); 
@@ -1205,51 +1216,51 @@
             if(pendingUploadData.some(i => !i.isValid)) return;
             
             showGlobalLoader();
-            DB.runMultiTx({
-                'master_inventory': (invItems) => {
-                    pendingUploadData.forEach(d => {
-                        let mIdx = invItems.findIndex(m => m.code === d.code);
-                        if(mIdx !== -1) invItems[mIdx].total -= d.qty;
-                    });
-                    return invItems;
-                },
-                'bazaar_items': (bItems) => {
-                    pendingUploadData.forEach(d => {
-                        let existingIdx = bItems.findIndex(i => i.code === d.code && i.bazaar_name === activeBazaarName && i.status === 'active');
-                        let finalKet = d.ketSales || "-";
-                        
-                        let isDisplay = finalKet.toLowerCase().includes('display');
-                        let parsedDisplayQty = 0;
-                        if (isDisplay) {
-                            let match = finalKet.match(/(\d+)\s*display/i);
-                            parsedDisplayQty = match ? parseInt(match[1]) : d.qty;
-                            if (parsedDisplayQty > d.qty) parsedDisplayQty = d.qty;
-                        }
+            try {
+                let promises = [];
+                let bItems = DB.get('bazaar_items');
 
-                        if (existingIdx !== -1) { 
-                            bItems[existingIdx].original_qty += d.qty; bItems[existingIdx].qty_in += d.qty; 
-                            bItems[existingIdx].status_pengiriman = 'Menunggu Refill Gudang'; 
-                            bItems[existingIdx].req_date = new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}); 
-                            
-                            let prevNote = (bItems[existingIdx].keterangan_sales && bItems[existingIdx].keterangan_sales !== "-") ? bItems[existingIdx].keterangan_sales + " | " : "";
-                            bItems[existingIdx].keterangan_sales = finalKet !== "-" ? prevNote + finalKet : (bItems[existingIdx].keterangan_sales || "-");
-                            
-                            if(isDisplay) {
-                                bItems[existingIdx].display_req_qty = (bItems[existingIdx].display_req_qty || 0) + parsedDisplayQty;
-                                bItems[existingIdx].display_req_type = 'tambahan';
-                            }
-                        } else { 
-                            bItems.push({ id: Date.now() + Math.random(), bazaar_name: activeBazaarName, brand: d.brand, product: d.product, variant: d.variant, code: d.code, collection: d.collection, original_qty: d.qty, qty_in: d.qty, qty_sold: 0, status: 'active', fisik_kembali: 0, status_pengiriman: 'Menunggu Gudang', keterangan_gudang: '-', req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}), keterangan_sales: finalKet, display_req_qty: isDisplay ? parsedDisplayQty : 0, display_req_type: isDisplay ? 'tambahan' : null }); 
+                pendingUploadData.forEach(d => {
+                    promises.push(updateDoc(doc(db, 'master_inventory', d._mDocId), { total: d.maxStock - d.qty }));
+                    
+                    let existing = bItems.find(i => i.code === d.code && i.bazaar_name === activeBazaarName && i.status === 'active');
+                    let finalKet = d.ketSales || "-";
+                    let isDisplay = finalKet.toLowerCase().includes('display');
+                    let parsedDisplayQty = 0;
+                    if (isDisplay) {
+                        let match = finalKet.match(/(\d+)\s*display/i);
+                        parsedDisplayQty = match ? parseInt(match[1]) : d.qty;
+                        if (parsedDisplayQty > d.qty) parsedDisplayQty = d.qty;
+                    }
+
+                    if (existing) { 
+                        let prevNote = (existing.keterangan_sales && existing.keterangan_sales !== "-") ? existing.keterangan_sales + " | " : "";
+                        let updatedData = {
+                            original_qty: existing.original_qty + d.qty,
+                            qty_in: existing.qty_in + d.qty,
+                            status_pengiriman: 'Menunggu Refill Gudang',
+                            req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}),
+                            keterangan_gudang: '-',
+                            keterangan_sales: finalKet !== "-" ? prevNote + finalKet : existing.keterangan_sales
+                        };
+                        if(isDisplay) {
+                            updatedData.display_req_qty = (existing.display_req_qty || 0) + parsedDisplayQty;
+                            updatedData.display_req_type = 'tambahan';
                         }
-                    });
-                    return bItems;
-                }
-            }).then(() => {
+                        promises.push(updateDoc(doc(db, 'bazaar_items', existing._docId), updatedData));
+                    } else { 
+                        promises.push(addDoc(collection(db, 'bazaar_items'), {
+                            id: Date.now() + Math.random(), bazaar_name: activeBazaarName, brand: d.brand, product: d.product, variant: d.variant, code: d.code, collection: d.collection, original_qty: d.qty, qty_in: d.qty, qty_sold: 0, status: 'active', fisik_kembali: 0, status_pengiriman: 'Menunggu Gudang', keterangan_gudang: '-', req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}), keterangan_sales: finalKet, display_req_qty: isDisplay ? parsedDisplayQty : 0, display_req_type: isDisplay ? 'tambahan' : null 
+                        }));
+                    }
+                });
+                await Promise.all(promises);
+
                 logActivity('Upload Permintaan', `Mengupload data permintaan via CSV untuk bazaar ${activeBazaarName}`);
                 hideGlobalLoader();
                 UI.alert("Sukses", "Data dikirim ke Gudang.", "success");
                 batalUploadBawaan(); openTab('tab-stok'); 
-            });
+            } catch (e) { hideGlobalLoader(); console.error(e); }
         }
         function batalUploadBawaan() { pendingUploadData = []; document.getElementById('uploadPreviewSection').classList.add('hidden'); document.getElementById('fileBawaan').value = ''; }
 
@@ -1350,8 +1361,11 @@
         function closePackingModal() { document.getElementById('packingModal').classList.remove('active'); }
 
         async function savePacking() {
-            let itemCodeToUpdate = DB.get('bazaar_items').find(i => String(i.id) === String(currentPackingId))?.code;
-            
+            let items = DB.get('bazaar_items');
+            let invItems = DB.get('master_inventory');
+            let item = items.find(i => String(i.id) === String(currentPackingId));
+            if(!item) return;
+
             let st = document.getElementById('packStatus').value;
             let mode = document.getElementById('packModeKardus').value;
             let rDay = document.getElementById('packRefillDay').value;
@@ -1391,36 +1405,31 @@
             if (note.trim() !== "") finalKet += ` (Catatan: ${note.trim()})`;
             
             if(isNaN(qReal) || qReal < 0) return UI.alert("Error", "Qty Aktual tidak valid!", "error");
-            let diffStore = 0;
+            
+            let orig = item.original_qty || item.qty_in;
+            if(qReal > orig) return UI.alert("Ditolak", `Tidak boleh melebihi permintaan awal (${orig} pcs).`, "error");
+            let diffStore = item.qty_in - qReal;
             
             showGlobalLoader();
-            DB.runMultiTx({
-                'bazaar_items': (bItems) => {
-                    let idx = bItems.findIndex(i => String(i.id) === String(currentPackingId));
-                    if(idx !== -1) {
-                        let orig = bItems[idx].original_qty || bItems[idx].qty_in;
-                        if(qReal > orig) throw `Tidak boleh melebihi permintaan awal (${orig} pcs).`; 
-                        
-                        diffStore = bItems[idx].qty_in - qReal;
-                        bItems[idx].status_pengiriman = statusPengiriman;
-                        bItems[idx].kardus = finalKardus;
-                        bItems[idx].keterangan_gudang = finalKet;
-                        bItems[idx].qty_in = qReal;
-                    }
-                    return bItems;
-                },
-                'master_inventory': (invItems) => {
-                    if (diffStore !== 0 && itemCodeToUpdate) {
-                        let mIdx = invItems.findIndex(m => m.code === itemCodeToUpdate);
-                        if(mIdx !== -1) invItems[mIdx].total += diffStore;
-                    }
-                    return invItems;
+            try {
+                let promises = [];
+                promises.push(updateDoc(doc(db, 'bazaar_items', item._docId), {
+                    status_pengiriman: statusPengiriman,
+                    kardus: finalKardus,
+                    keterangan_gudang: finalKet,
+                    qty_in: qReal
+                }));
+
+                if (diffStore !== 0) {
+                    let mItem = invItems.find(m => m.code === item.code);
+                    if(mItem) promises.push(updateDoc(doc(db, 'master_inventory', mItem._docId), { total: mItem.total + diffStore }));
                 }
-            }).then(() => {
-                logActivity('Packing Barang', `Packing kode ${itemCodeToUpdate} dengan jumlah ${qReal} (Status: ${st})`);
+
+                await Promise.all(promises);
+                logActivity('Packing Barang', `Packing kode ${item.code} dengan jumlah ${qReal} (Status: ${st})`);
                 hideGlobalLoader();
                 closePackingModal();
-            }).catch(e => { hideGlobalLoader(); UI.alert("Ditolak", e, "error"); });
+            } catch(e) { hideGlobalLoader(); UI.alert("Ditolak", e, "error"); }
         }
 
         // ==========================================
@@ -1435,16 +1444,13 @@
                     if(btnCell) btnCell.innerHTML = `<span style="display:block; padding:8px; background:#d1fae5; color:#047857; border-radius:6px; font-weight:bold; font-size:0.8rem; text-align:center;">✅ Selesai</span>`;
                 }
 
-                DB.runTx('bazaar_items', (items) => {
-                    let idx = items.findIndex(i => String(i.id) === String(id)); 
-                    if(idx !== -1) {
-                        items[idx].status_pengiriman = 'Diterima Sales'; 
-                        items[idx].qty_revisi_sales = items[idx].qty_in; 
-                    }
-                    return items;
-                }).then(() => {
-                    logActivity('Terima Barang', `Menerima barang sesuai sistem gudang`);
-                });
+                let item = DB.get('bazaar_items').find(i => String(i.id) === String(id));
+                if(item) {
+                    try {
+                        await updateDoc(doc(db, 'bazaar_items', item._docId), { status_pengiriman: 'Diterima Sales', qty_revisi_sales: item.qty_in });
+                        logActivity('Terima Barang', `Menerima barang sesuai sistem gudang`);
+                    } catch(e) { console.log(e); }
+                }
             } 
         }
 
@@ -1467,28 +1473,23 @@
                 if (btnCell) btnCell.innerHTML = `<span style="display:block; padding:8px; background:#fef3c7; color:#b45309; border-radius:6px; font-weight:bold; font-size:0.8rem; text-align:center;">⏳ Diproses...</span>`;
             }
 
-            DB.runMultiTx({
-                'bazaar_items': (items) => {
-                    let idx = items.findIndex(i => String(i.id) === String(id));
-                    if(idx !== -1) {
-                        items[idx].qty_revisi_sales = newQty; 
-                        items[idx].status_pengiriman = 'Diterima Sales (Revisi)';
-                        let prevNote = (items[idx].keterangan_sales && items[idx].keterangan_sales !== "-") ? items[idx].keterangan_sales + " | " : "";
-                        items[idx].keterangan_sales = prevNote + `Revisi Terima: ${newQty} pcs (${note || 'Tanpa keterangan'})`;
-                    }
-                    return items;
-                },
-                'master_inventory': (inv) => {
-                    if(diffStore !== 0) {
-                        let mIdx = inv.findIndex(m => m.code === itemRef.code);
-                        if(mIdx !== -1) inv[mIdx].total += diffStore;
-                    }
-                    return inv;
+            try {
+                let promises = [];
+                let prevNote = (itemRef.keterangan_sales && itemRef.keterangan_sales !== "-") ? itemRef.keterangan_sales + " | " : "";
+                promises.push(updateDoc(doc(db, 'bazaar_items', itemRef._docId), {
+                    qty_revisi_sales: newQty,
+                    status_pengiriman: 'Diterima Sales (Revisi)',
+                    keterangan_sales: prevNote + `Revisi Terima: ${newQty} pcs (${note || 'Tanpa keterangan'})`
+                }));
+
+                if (diffStore !== 0) {
+                    let mItem = DB.get('master_inventory').find(m => m.code === itemRef.code);
+                    if(mItem) promises.push(updateDoc(doc(db, 'master_inventory', mItem._docId), { total: mItem.total + diffStore }));
                 }
-            }).then(() => {
+
+                await Promise.all(promises);
                 logActivity('Revisi Terima', `Menerima kode: ${itemRef.code} dengan revisi QTY: ${newQty} pcs`);
-                UI.alert("Sukses", "Barang diterima dengan status revisi.", "success");
-            });
+            } catch (e) { console.log(e); }
         }
 
         async function catatPenjualan(id) {
@@ -1507,17 +1508,15 @@
             
             let res = await UI.salePrompt(`Jual`, `Sisa: ${sisa}`, dOpt, sisa); if(!res) return;
             
-            DB.runTx('bazaar_items', (items) => {
-                let idx = items.findIndex(i => String(i.id) === String(id));
-                if(idx !== -1) {
-                    items[idx].qty_sold += res.qty; 
-                    items[idx].sales_history = items[idx].sales_history || []; 
-                    items[idx].sales_history.push({ date: res.date, qty: res.qty });
-                }
-                return items;
-            }).then(() => {
+            try {
+                let sHist = itemRef.sales_history || [];
+                sHist.push({ date: res.date, qty: res.qty });
+                await updateDoc(doc(db, 'bazaar_items', itemRef._docId), {
+                    qty_sold: itemRef.qty_sold + res.qty,
+                    sales_history: sHist
+                });
                 logActivity('Jual Barang', `Penjualan kode: ${itemRef.code} sebanyak ${res.qty} pcs`);
-            });
+            } catch(e) { console.log(e); }
         }
 
         // --- FITUR KARDUS DISPLAY (TAMBAH & BATAL/EDIT) ---
@@ -1532,50 +1531,42 @@
 
             showGlobalLoader();
             if (isTambahan) {
-                DB.runMultiTx({
-                    'master_inventory': (inv) => {
-                        let mIdx = inv.findIndex(m => m.code === item.code);
-                        if (mIdx !== -1) inv[mIdx].total -= reqQty;
-                        return inv;
-                    },
-                    'bazaar_items': (items) => {
-                        let idx = items.findIndex(i => String(i.id) === String(id));
-                        if (idx !== -1) {
-                            items[idx].original_qty += reqQty;
-                            items[idx].qty_in += reqQty;
-                            items[idx].status_pengiriman = 'Menunggu Refill Gudang';
-                            items[idx].req_date = new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'});
-                            let prevNote = (items[idx].keterangan_sales && items[idx].keterangan_sales !== "-") ? items[idx].keterangan_sales + " | " : "";
-                            items[idx].keterangan_sales = prevNote + `[KARDUS DISPLAY: ${reqQty} pcs]`;
-                            items[idx].display_req_qty = reqQty;
-                            items[idx].display_req_type = 'tambahan';
-                        }
-                        return items;
-                    }
-                }).then(() => {
+                try {
+                    let promises = [];
+                    let mItem = DB.get('master_inventory').find(m => m.code === item.code);
+                    if(mItem) promises.push(updateDoc(doc(db, 'master_inventory', mItem._docId), { total: mItem.total - reqQty }));
+
+                    let prevNote = (item.keterangan_sales && item.keterangan_sales !== "-") ? item.keterangan_sales + " | " : "";
+                    promises.push(updateDoc(doc(db, 'bazaar_items', item._docId), {
+                        original_qty: item.original_qty + reqQty,
+                        qty_in: item.qty_in + reqQty,
+                        status_pengiriman: 'Menunggu Refill Gudang',
+                        req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}),
+                        keterangan_sales: prevNote + `[KARDUS DISPLAY: ${reqQty} pcs]`,
+                        display_req_qty: reqQty,
+                        display_req_type: 'tambahan'
+                    }));
+                    await Promise.all(promises);
                     logActivity('Req Display', `Meminta Kardus Display kode: ${item.code} qty: ${reqQty}`);
                     hideGlobalLoader();
                     UI.alert("Sukses", `Permintaan Kardus Display berhasil dikirim ke Gudang.`, "success");
-                });
+                } catch(e) { hideGlobalLoader(); console.error(e); }
             } else {
                  if (item.status_pengiriman === 'Dikemas' || item.status_pengiriman === 'Diterima Sales' || item.status_pengiriman === 'Diterima Sales (Revisi)') {
                      hideGlobalLoader();
                      return UI.alert("Ditolak", "Barang ini sudah dipacking/diterima. Anda harus memilih opsi 'Tambah Stok' jika membutuhkan barang lagi.", "warning");
                  }
-                 DB.runTx('bazaar_items', (items) => {
-                    let idx = items.findIndex(i => String(i.id) === String(id));
-                    if(idx !== -1) {
-                        let prevNote = (items[idx].keterangan_sales && items[idx].keterangan_sales !== "-") ? items[idx].keterangan_sales + " | " : "";
-                        items[idx].keterangan_sales = prevNote + `[KARDUS DISPLAY: ${reqQty} pcs]`;
-                        items[idx].display_req_qty = reqQty;
-                        items[idx].display_req_type = 'catatan';
-                    }
-                    return items;
-                 }).then(() => {
-                    logActivity('Req Display', `Meminta Kardus Display kode: ${item.code} qty: ${reqQty}`);
-                    hideGlobalLoader();
-                    UI.alert("Sukses", `Permintaan Kardus Display berhasil dikirim ke Gudang.`, "success");
-                 });
+                 try {
+                     let prevNote = (item.keterangan_sales && item.keterangan_sales !== "-") ? item.keterangan_sales + " | " : "";
+                     await updateDoc(doc(db, 'bazaar_items', item._docId), {
+                        keterangan_sales: prevNote + `[KARDUS DISPLAY: ${reqQty} pcs]`,
+                        display_req_qty: reqQty,
+                        display_req_type: 'catatan'
+                     });
+                     logActivity('Req Display', `Meminta Kardus Display kode: ${item.code} qty: ${reqQty}`);
+                     hideGlobalLoader();
+                     UI.alert("Sukses", `Permintaan Kardus Display berhasil dikirim ke Gudang.`, "success");
+                 } catch(e) { hideGlobalLoader(); console.error(e); }
             }
         }
 
@@ -1586,48 +1577,36 @@
             if(!conf) return;
 
             showGlobalLoader();
-            if (item.display_req_type === 'tambahan') {
-                DB.runMultiTx({
-                    'master_inventory': (inv) => {
-                        let mIdx = inv.findIndex(m => m.code === item.code);
-                        if (mIdx !== -1) inv[mIdx].total += item.display_req_qty;
-                        return inv;
-                    },
-                    'bazaar_items': (items) => {
-                        let idx = items.findIndex(i => String(i.id) === String(id));
-                        if (idx !== -1) {
-                            items[idx].original_qty -= item.display_req_qty;
-                            items[idx].qty_in -= item.display_req_qty;
-                            let noteToRemove = `[KARDUS DISPLAY: ${item.display_req_qty} pcs]`;
-                            items[idx].keterangan_sales = items[idx].keterangan_sales.replace(noteToRemove, '').trim();
-                            if(items[idx].keterangan_sales.endsWith('|')) items[idx].keterangan_sales = items[idx].keterangan_sales.slice(0, -1).trim();
-                            if(items[idx].keterangan_sales === '' || items[idx].keterangan_sales === '|') items[idx].keterangan_sales = '-';
-                            items[idx].display_req_qty = 0; items[idx].display_req_type = null;
-                        }
-                        return items;
-                    }
-                }).then(() => {
-                    logActivity('Batal Display', `Membatalkan Kardus Display kode: ${item.code}`);
-                    hideGlobalLoader();
-                    UI.alert("Sukses", "Permintaan Kardus Display berhasil dibatalkan. Silakan tekan tombol 'Req Display' kembali jika Anda ingin mengatur ulang.", "success");
-                });
-            } else {
-                DB.runTx('bazaar_items', (items) => {
-                    let idx = items.findIndex(i => String(i.id) === String(id));
-                    if (idx !== -1) {
-                        let noteToRemove = `[KARDUS DISPLAY: ${item.display_req_qty} pcs]`;
-                        items[idx].keterangan_sales = items[idx].keterangan_sales.replace(noteToRemove, '').trim();
-                        if(items[idx].keterangan_sales.endsWith('|')) items[idx].keterangan_sales = items[idx].keterangan_sales.slice(0, -1).trim();
-                        if(items[idx].keterangan_sales === '' || items[idx].keterangan_sales === '|') items[idx].keterangan_sales = '-';
-                        items[idx].display_req_qty = 0; items[idx].display_req_type = null;
-                    }
-                    return items;
-                }).then(() => {
-                    logActivity('Batal Display', `Membatalkan Kardus Display kode: ${item.code}`);
-                    hideGlobalLoader();
-                    UI.alert("Sukses", "Permintaan Kardus Display berhasil dibatalkan. Silakan tekan tombol 'Req Display' kembali jika Anda ingin mengatur ulang.", "success");
-                });
-            }
+            try {
+                let promises = [];
+                let noteToRemove = `[KARDUS DISPLAY: ${item.display_req_qty} pcs]`;
+                let newKet = item.keterangan_sales.replace(noteToRemove, '').trim();
+                if(newKet.endsWith('|')) newKet = newKet.slice(0, -1).trim();
+                if(newKet === '' || newKet === '|') newKet = '-';
+
+                if (item.display_req_type === 'tambahan') {
+                    let mItem = DB.get('master_inventory').find(m => m.code === item.code);
+                    if(mItem) promises.push(updateDoc(doc(db, 'master_inventory', mItem._docId), { total: mItem.total + item.display_req_qty }));
+                    
+                    promises.push(updateDoc(doc(db, 'bazaar_items', item._docId), {
+                        original_qty: item.original_qty - item.display_req_qty,
+                        qty_in: item.qty_in - item.display_req_qty,
+                        keterangan_sales: newKet,
+                        display_req_qty: 0,
+                        display_req_type: null
+                    }));
+                } else {
+                    promises.push(updateDoc(doc(db, 'bazaar_items', item._docId), {
+                        keterangan_sales: newKet,
+                        display_req_qty: 0,
+                        display_req_type: null
+                    }));
+                }
+                await Promise.all(promises);
+                logActivity('Batal Display', `Membatalkan Kardus Display kode: ${item.code}`);
+                hideGlobalLoader();
+                UI.alert("Sukses", "Permintaan Kardus Display berhasil dibatalkan.", "success");
+            } catch(e) { hideGlobalLoader(); console.error(e); }
         }
 
         async function stockOpname(id) {
@@ -1639,86 +1618,95 @@
             let fisik = sisa; if(opt !== "Sesuai Sistem") { let f = await UI.prompt("Fisik", "Jumlah?"); if(!f) return; fisik = parseInt(f); if(isNaN(fisik)) return; }
             
             showGlobalLoader();
-            DB.runTx('bazaar_items', (items) => {
-                let idx = items.findIndex(i => String(i.id) === String(id));
-                if(idx !== -1) { items[idx].fisik_kembali = fisik; items[idx].status = 'done'; }
-                return items;
-            }).then(() => {
+            try {
+                await updateDoc(doc(db, 'bazaar_items', itemRef._docId), { fisik_kembali: fisik, status: 'done' });
                 logActivity('Stock Opname', `SO kode: ${itemRef.code} dengan stok fisik: ${fisik}`);
                 hideGlobalLoader();
                 UI.alert("Sukses", "Opname disimpan", "success");
-            });
+            } catch(e) { hideGlobalLoader(); console.error(e); }
         }
         
         async function hapusBazaarData(bName) {
             let itemsToRemove = DB.get('bazaar_items').filter(i => i.bazaar_name === bName && i.status === 'active');
-            await DB.runMultiTx({
-                'bazaars_list': (bazaars) => bazaars.filter(b => b.name !== bName),
-                'bazaar_items': (items) => items.filter(item => !(item.bazaar_name === bName && item.status === 'active')),
-                'master_inventory': (inv) => {
-                    itemsToRemove.forEach(item => { 
-                        let mIdx = inv.findIndex(m => m.code === item.code); 
-                        if(mIdx !== -1) {
-                            let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
-                            inv[mIdx].total += (actualQty - item.qty_sold); 
-                        }
-                    });
-                    return inv;
+            let promises = [];
+            promises.push(deleteDoc(doc(db, 'bazaars_list', bName)));
+            
+            itemsToRemove.forEach(item => { 
+                promises.push(deleteDoc(doc(db, 'bazaar_items', item._docId)));
+                let mItem = DB.get('master_inventory').find(m => m.code === item.code); 
+                if(mItem) {
+                    let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
+                    promises.push(updateDoc(doc(db, 'master_inventory', mItem._docId), { total: mItem.total + (actualQty - item.qty_sold) }));
                 }
             });
+            await Promise.all(promises);
         }
-        async function hapusBazaarSales() { let sel = document.getElementById('salesBazaarSelect').value; if(!sel || sel === 'NEW') return; let conf = await UI.confirm("Hapus?", "Yakin hapus bazaar?", "error"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus Bazaar', `Sales menghapus bazaar: ${sel}`); await hapusBazaarData(sel); populateSalesBazaarDropdown(); hideGlobalLoader(); UI.alert("Sukses", "Bazaar dihapus", "success"); }, 100); } }
-        async function hapusBazaarAdmin(bName) { let conf = await UI.confirm("Hapus?", `Yakin hapus ${bName}?`, "error"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus Bazaar', `Superadmin menghapus bazaar: ${bName}`); await hapusBazaarData(bName); hideGlobalLoader(); UI.alert("Sukses", "Terhapus", "success"); }, 100); } }
+        async function hapusBazaarSales() { let sel = document.getElementById('salesBazaarSelect').value; if(!sel || sel === 'NEW') return; let conf = await UI.confirm("Hapus?", "Yakin hapus bazaar?", "error"); if(conf) { showGlobalLoader(); try{ await hapusBazaarData(sel); logActivity('Hapus Bazaar', `Sales menghapus bazaar: ${sel}`); populateSalesBazaarDropdown(); hideGlobalLoader(); UI.alert("Sukses", "Bazaar dihapus", "success"); } catch(e){ hideGlobalLoader(); console.error(e);} } }
+        async function hapusBazaarAdmin(bName) { let conf = await UI.confirm("Hapus?", `Yakin hapus ${bName}?`, "error"); if(conf) { showGlobalLoader(); try{ await hapusBazaarData(bName); logActivity('Hapus Bazaar', `Superadmin menghapus bazaar: ${bName}`); hideGlobalLoader(); UI.alert("Sukses", "Terhapus", "success"); } catch(e){ hideGlobalLoader(); console.error(e);} } }
         
         async function hapusBarang(id) { 
             let itemRef = DB.get('bazaar_items').find(i => String(i.id) === String(id)); if(!itemRef) return; 
             let conf = await UI.confirm("Hapus?", `Kembalikan ${itemRef.code} ke gudang?`, "warning"); if(!conf) return; 
             
             showGlobalLoader();
-            DB.runMultiTx({
-                'bazaar_items': (items) => items.filter(i => String(i.id) !== String(id)),
-                'master_inventory': (inv) => {
-                    let mIdx = inv.findIndex(m => m.code === itemRef.code); 
-                    if(mIdx !== -1) {
-                        let actualQty = itemRef.qty_revisi_sales !== undefined ? itemRef.qty_revisi_sales : itemRef.qty_in;
-                        inv[mIdx].total += (actualQty - itemRef.qty_sold); 
-                    }
-                    return inv;
+            try {
+                let promises = [];
+                promises.push(deleteDoc(doc(db, 'bazaar_items', itemRef._docId)));
+                let mItem = DB.get('master_inventory').find(m => m.code === itemRef.code); 
+                if(mItem) {
+                    let actualQty = itemRef.qty_revisi_sales !== undefined ? itemRef.qty_revisi_sales : itemRef.qty_in;
+                    promises.push(updateDoc(doc(db, 'master_inventory', mItem._docId), { total: mItem.total + (actualQty - itemRef.qty_sold) }));
                 }
-            }).then(() => {
+                await Promise.all(promises);
                 logActivity('Hapus Barang', `Menghapus permintaan barang kode: ${itemRef.code}`);
                 hideGlobalLoader();
                 UI.alert("Sukses", "Terhapus", "success"); 
-            });
+            } catch(e) { hideGlobalLoader(); console.error(e); }
         }
+
         async function hapusSemuaBarang() { 
             let conf = await UI.confirm("Hapus Semua?", "Semua dikembalikan ke master?", "error"); if(!conf) return; 
             let itemsToRemove = DB.get('bazaar_items').filter(item => { let match = activeBazaarName ? (item.bazaar_name === activeBazaarName) : true; return match && item.status === 'active'; });
             
             showGlobalLoader();
-            DB.runMultiTx({
-                'bazaar_items': (items) => items.filter(item => { 
-                    let match = activeBazaarName ? (item.bazaar_name === activeBazaarName) : true; 
-                    return !(match && item.status === 'active'); 
-                }),
-                'master_inventory': (inv) => {
-                    itemsToRemove.forEach(item => { 
-                        let mIdx = inv.findIndex(m => m.code === item.code); 
-                        if(mIdx !== -1) {
-                            let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
-                            inv[mIdx].total += (actualQty - item.qty_sold); 
-                        }
-                    });
-                    return inv;
-                }
-            }).then(() => {
+            try {
+                let promises = [];
+                itemsToRemove.forEach(item => { 
+                    promises.push(deleteDoc(doc(db, 'bazaar_items', item._docId)));
+                    let mItem = DB.get('master_inventory').find(m => m.code === item.code); 
+                    if(mItem) {
+                        let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
+                        promises.push(updateDoc(doc(db, 'master_inventory', mItem._docId), { total: mItem.total + (actualQty - item.qty_sold) }));
+                    }
+                });
+                await Promise.all(promises);
                 logActivity('Hapus Semua Barang', `Menghapus semua stok berjalan dari bazaar aktif`);
                 hideGlobalLoader();
                 UI.alert("Sukses", "Semua terhapus", "success"); 
-            });
+            } catch(e) { hideGlobalLoader(); console.error(e); }
         }
-        async function hapusRiwayat(id) { let conf = await UI.confirm("Hapus?", "", "warning"); if(conf) { showGlobalLoader(); logActivity('Hapus Riwayat', `Menghapus satu riwayat opname`); await DB.runTx('bazaar_items', (items) => items.filter(i => String(i.id) !== String(id))); hideGlobalLoader(); } }
-        async function hapusSemuaRiwayat() { let conf = await UI.confirm("Hapus Semua?", "", "error"); if(conf) { showGlobalLoader(); logActivity('Hapus Semua Riwayat', `Mengosongkan semua riwayat opname`); await DB.runTx('bazaar_items', (items) => items.filter(i => i.status === 'active')); hideGlobalLoader(); } }
+
+        async function hapusRiwayat(id) { 
+            let conf = await UI.confirm("Hapus?", "", "warning"); 
+            if(conf) { 
+                showGlobalLoader(); 
+                let item = DB.get('bazaar_items').find(i => String(i.id) === String(id));
+                if(item) await deleteDoc(doc(db, 'bazaar_items', item._docId));
+                logActivity('Hapus Riwayat', `Menghapus satu riwayat opname`); 
+                hideGlobalLoader(); 
+            } 
+        }
+        async function hapusSemuaRiwayat() { 
+            let conf = await UI.confirm("Hapus Semua?", "", "error"); 
+            if(conf) { 
+                showGlobalLoader(); 
+                let toDelete = DB.get('bazaar_items').filter(i => i.status === 'done');
+                let promises = toDelete.map(item => deleteDoc(doc(db, 'bazaar_items', item._docId)));
+                await Promise.all(promises);
+                logActivity('Hapus Semua Riwayat', `Mengosongkan semua riwayat opname`); 
+                hideGlobalLoader(); 
+            } 
+        }
 
         // RENDERING TABEL TER-OPTIMASI DENGAN PAGINATION
         function renderTablesBazaar() {
@@ -1954,7 +1942,7 @@
             let bazaars = DB.get('bazaars_list'); let tbodyB = document.getElementById('tableBodyBazaarsAdmin');
             if(tbodyB) tbodyB.innerHTML = bazaars.map(b => `<tr><td>${b.name}</td><td>${b.start_date}</td><td><button class="btn-danger" onclick="hapusBazaarAdmin('${b.name}')">Hapus</button></td></tr>`).join('');
         }
-        async function hapusUser(username) { let conf = await UI.confirm("Hapus?", `Hapus ${username}?`, "warning"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus User', `Menghapus user: ${username}`); await DB.runTx('users', (users) => users.filter(u => u.username !== username)); hideGlobalLoader(); }, 100); } }
+        async function hapusUser(username) { let conf = await UI.confirm("Hapus?", `Hapus ${username}?`, "warning"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus User', `Menghapus user: ${username}`); await deleteDoc(doc(db, 'users', username.toLowerCase())); hideGlobalLoader(); UI.alert("Sukses", "User dihapus.", "success"); }, 100); } }
         
         async function tambahMasterManual() {
             let brand = document.getElementById('masBrand').value.trim();
@@ -1974,20 +1962,15 @@
             let total = btk + gu + grec + gtok + gweb;
             let newData = { brand, product, variant, code, collection, btk, gu, grec, gtok, gweb, total };
             
-            let confOverride = false;
             let existingItem = DB.get('master_inventory').find(item => item.code.toLowerCase() === code.toLowerCase());
             if (existingItem) {
-                confOverride = await UI.confirm("Update Data", `Kode barang ${code} sudah ada di master. Yakin ingin menimpa (update) datanya menjadi yang baru?`, "warning");
+                let confOverride = await UI.confirm("Update Data", `Kode barang ${code} sudah ada di master. Yakin ingin menimpa (update) datanya menjadi yang baru?`, "warning");
                 if (!confOverride) return;
             }
 
             showGlobalLoader();
-            DB.runTx('master_inventory', (inv) => {
-                let existingIdx = inv.findIndex(item => item.code.toLowerCase() === code.toLowerCase());
-                if (existingIdx !== -1) inv[existingIdx] = newData;
-                else inv.push(newData);
-                return inv;
-            }).then(() => {
+            try {
+                await setDoc(doc(db, 'master_inventory', code), newData);
                 logActivity('Tambah Master Manual', `Menambah/Update manual produk kode: ${code}`);
                 localStorage.setItem('master_inventory_date', new Date().toLocaleString());
                 hideGlobalLoader();
@@ -1998,7 +1981,7 @@
                 document.getElementById('masCollection').value = ''; document.getElementById('masBTK').value = '';
                 document.getElementById('masGU').value = ''; document.getElementById('masGREC').value = '';
                 document.getElementById('masGTOK').value = ''; document.getElementById('masGWEB').value = '';
-            });
+            } catch(e) { hideGlobalLoader(); console.error(e); }
         }
 
         async function prosesUploadCSV() {
@@ -2009,7 +1992,8 @@
                 let lines = parseCSV(e.target.result); 
                 
                 showGlobalLoader();
-                DB.runTx('master_inventory', (currentInv) => {
+                try {
+                    let promises = [];
                     for(let i=1; i<lines.length; i++) {
                         let c = lines[i]; 
                         if(c.length >= 10) {
@@ -2020,30 +2004,37 @@
                             let total = btk + gu + grec + gtok + gweb;
                             
                             let newData = { brand: (c[0]||'').trim(), product: (c[1]||'').trim(), variant: (c[2]||'').trim(), code: code, collection: (c[4]||'').trim(), btk: btk, gu: gu, grec: grec, gtok: gtok, gweb: gweb, total: total };
-                            let existingIdx = currentInv.findIndex(item => item.code === code);
-                            
-                            if (existingIdx !== -1) currentInv[existingIdx] = newData;
-                            else currentInv.push(newData);
+                            promises.push(setDoc(doc(db, 'master_inventory', code), newData));
                         }
                     }
-                    return currentInv;
-                }).then(() => {
+                    await Promise.all(promises);
                     logActivity('Upload CSV Master', `Mengupload data CSV Master Inventory`);
                     localStorage.setItem('master_inventory_date', new Date().toLocaleString()); 
                     hideGlobalLoader();
                     UI.alert("Sukses", "Data Master berhasil di-update dari CSV.", "success"); 
                     fileInput.value = ''; 
                     document.getElementById('uploadStatusAdmin').innerHTML = '';
-                });
+                } catch(e) { hideGlobalLoader(); console.error(e); }
             }; 
             reader.readAsText(fileInput.files[0]);
         }
-        async function hapusDataMaster() { let conf = await UI.confirm("Hapus Semua", "Yakin kosongkan SELURUH DATA master?", "error"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Kosongkan Master', `Menghapus seluruh Master Inventory Data`); await DB.runTx('master_inventory', () => []); hideGlobalLoader(); }, 100); } }
+        async function hapusDataMaster() { 
+            let conf = await UI.confirm("Hapus Semua", "Yakin kosongkan SELURUH DATA master?", "error"); 
+            if(conf) { 
+                showGlobalLoader(); 
+                let inv = DB.get('master_inventory');
+                let promises = inv.map(i => deleteDoc(doc(db, 'master_inventory', i._docId)));
+                await Promise.all(promises);
+                logActivity('Kosongkan Master', `Menghapus seluruh Master Inventory Data`); 
+                hideGlobalLoader(); 
+                UI.alert("Sukses", "Semua data master berhasil dihapus.", "success");
+            } 
+        }
+
         function renderMasterDateStatus() {
             let inv = DB.get('master_inventory'); let date = localStorage.getItem('master_inventory_date'); let statEl = document.getElementById('masterInventoryStatus'); let tbody = document.getElementById('tableBodyMasterPreview');
             if(statEl) statEl.innerHTML = inv.length > 0 ? `✅ <strong>${inv.length}</strong> data (${date})` : `❌ Belum ada Master Data`;
             if(tbody) {
-                // Batasi hingga 50 untuk efisiensi
                 let limitedInv = inv.slice(0, 50);
                 tbody.innerHTML = limitedInv.map(d => `<tr><td>${d.brand}</td><td>${d.product}</td><td>${d.variant}</td><td><code>${d.code}</code></td><td>${d.collection}</td><td>${d.btk}</td><td>${d.gu}</td><td>${d.grec}</td><td>${d.gtok}</td><td>${d.gweb}</td><td>${d.total}</td></tr>`).join('');
                 if (inv.length > 50) {
