@@ -16,13 +16,15 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
+    <!-- Cropper.js untuk fitur potong/crop foto -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js"></script>
 
     <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.5.1/dist/confetti.browser.min.js"></script>
     <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <script src="qrcode.min.js"></script>
 
+    <!-- FIREBASE COMPAT SDK -->
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
@@ -218,6 +220,7 @@
     <button class="btn-enter animate__animated animate__pulse animate__infinite" onclick="enterAppFlow()">MULAI APLIKASI</button>
 </div>
 
+<!-- HALAMAN LOGIN & REGISTER -->
 <div id="authScreen" class="hidden">
     <div class="auth-card animate__animated animate__zoomIn">
         <h2 id="authTitle" style="color:var(--primary); font-weight:900; margin-top:0;">LOGIN APLIKASI</h2>
@@ -238,6 +241,7 @@
     </div>
 </div>
 
+<!-- DASHBOARD ADMIN KHUSUS -->
 <div id="adminScreen" class="hidden">
     <div class="card animate__animated animate__fadeInUp" style="width: 100%; max-width: 500px; margin-top: 20px; text-align:center;">
         <h2 style="color: var(--primary);"><i class="fas fa-user-shield"></i> SUPERADMIN</h2>
@@ -248,6 +252,7 @@
     </div>
 </div>
 
+<!-- MODAL MANAJER AKSES PERTANDINGAN (HOST ONLY) -->
 <div id="accessManagerModal" class="hidden">
     <div class="dialog-box" style="width: 90%; max-width: 450px; max-height: 85vh; overflow-y:auto; padding: 20px;">
         <h3 style="color:var(--primary); margin-top:0;"><i class="fas fa-key"></i> Manajer Akses</h3>
@@ -276,6 +281,7 @@
     </div>
 </div>
 
+<!-- MODAL BAGAN BRACKET KNOCKOUT -->
 <div id="bracketViewModal" class="hidden">
     <div class="dialog-box" style="width: 92%; max-width: 480px; max-height: 85vh; overflow-y:auto; padding: 20px;">
         <h3 style="color:var(--primary); margin-top:0;"><i class="fas fa-sitemap"></i> Bagan Bracket</h3>
@@ -284,6 +290,7 @@
     </div>
 </div>
 
+<!-- MODAL RINGKASAN SESI TERJADWAL -->
 <div id="sessionSummaryModal" class="hidden">
     <div class="dialog-box" style="width: 92%; max-width: 420px; max-height: 85vh; overflow-y:auto; padding: 20px;">
         <h3 style="color:var(--primary); margin-top:0;"><i class="fas fa-clipboard-list"></i> Ringkasan Sesi</h3>
@@ -392,6 +399,7 @@
     </div>
 </div>
 
+<!-- MODAL EDIT RIWAYAT MATCH (SKOR & PEMAIN) -->
 <div id="editScoreDialog" class="hidden">
     <div class="dialog-box admin-only" style="width: 90%; max-width: 400px; padding: 25px; max-height:85vh; overflow-y:auto;">
         <h3 style="color:var(--primary); margin-top:0;">Edit Riwayat Match</h3>
@@ -449,7 +457,9 @@
         </div>
     </header>
 
+    <!-- TAB HOME -->
     <div id="tab-home" class="content active">
+        <!-- SETUP JUDUL TURNAMEN -->
         <div id="titleArea" class="card owner-only" style="text-align:center; margin-top:20px;">
             <h3 style="color:var(--primary); font-weight:900; margin-top:0;">NAMA TURNAMEN BARU</h3>
             <p style="font-size:13px; color:var(--text-muted);">Masukkan judul permainan untuk memulai turnamen baru.</p>
@@ -462,6 +472,7 @@
             </div>
         </div>
 
+        <!-- SETUP PEMAIN -->
         <div id="playerArea" class="hidden">
             <div class="card" style="display:flex; justify-content:space-between; align-items:center; border: 2px dashed var(--primary);">
                 <div style="display:flex; flex-direction:column;">
@@ -514,6 +525,7 @@
         </div>
     </div>
 
+    <!-- TAB PLAY -->
     <div id="tab-play" class="content">
         <div id="setupArea" class="card owner-only" style="padding:20px;">
             <h3 style="margin:0 0 15px 0; text-align:center; color:var(--text-main);"><i class="fas fa-sliders-h"></i> Pengaturan Match</h3>
@@ -536,6 +548,7 @@
                 <button id="btnFormatDoubles" class="seg-btn active" onclick="setFormat('doubles')"><i class="fas fa-user-friends"></i> 2 VS 2</button>
             </div>
 
+            <!-- FIELD KHUSUS MODE LIGA -->
             <div id="leagueSetupFields">
                 <label style="font-size:12px; font-weight:bold; color:var(--text-muted); margin-bottom:5px; display:block;">JUMLAH LAPANGAN AKTIF</label>
                 <input type="number" id="numCourts" value="1" min="1" max="10" style="text-align:center; font-weight:900; font-size:16px;" oninput="renderNextUpPreview()">
@@ -560,6 +573,7 @@
                 </button>
             </div>
 
+            <!-- FIELD KHUSUS MODE KNOCKOUT -->
             <div id="knockoutSetupFields" class="hidden">
                 <p style="font-size:12px; color:var(--text-muted); text-align:center; margin-bottom:15px;">Bracket gugur akan dibuat otomatis dari semua pemain berstatus HADIR, diacak secara acak. Jika jumlah peserta bukan kelipatan 2, sebagian akan mendapat BYE (otomatis lolos) di babak pertama.</p>
                 <button class="btn btn-primary owner-only" style="font-size:16px; padding:16px;" onclick="generateBracket()">
@@ -578,6 +592,7 @@
         </div>
     </div>
 
+    <!-- TAB RANK -->
     <div id="tab-rank" class="content">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
             <h3 style="margin:0; font-weight:900;">KLASEMEN LIVE</h3>
@@ -626,6 +641,7 @@
         <div id="histList" style="padding-bottom:30px; display:flex; flex-direction:column; gap:10px; max-height:450px; overflow-y:auto; overflow-x:hidden;"></div>
     </div>
 
+    <!-- TAB SOCIAL / FRIENDS -->
     <div id="tab-social" class="content">
         <h3 style="margin:0 0 15px 0; font-weight:900; color:var(--primary);"><i class="fas fa-user-friends"></i> SOSIAL & TEMAN</h3>
         
@@ -1200,31 +1216,11 @@
         if(inp) inp.value = url;
         let container = document.getElementById('qrCodeContainer');
         if(!container) return;
-        
         container.innerHTML = '';
-        if(typeof QRCode === 'undefined') { 
-            container.innerHTML = '<small style="color:var(--text-muted); padding:20px; display:block;">QR tidak tersedia offline</small>'; 
-            return; 
-        }
-        
-        // PERBAIKAN: Menggunakan toDataURL agar di-render sebagai elemen <img> biasa yang stabil
-        QRCode.toDataURL(url, { 
-            width: 170, 
-            margin: 1, 
-            color: { dark: '#111827', light: '#ffffff' } 
-        }, (err, dataUrl) => {
-            if(!err) {
-                let img = document.createElement('img');
-                img.src = dataUrl;
-                img.style.display = 'block';
-                img.style.borderRadius = '5px';
-                img.style.width = '100%';
-                img.style.height = 'auto';
-                container.appendChild(img);
-            } else {
-                console.error("Gagal membuat QR Code:", err);
-                container.innerHTML = '<small style="color:var(--warning);">Gagal memuat QR Code</small>';
-            }
+        if(typeof QRCode === 'undefined') { container.innerHTML = '<small style="color:var(--text-muted); padding:20px; display:block;">QR tidak tersedia offline</small>'; return; }
+        let canvas = document.createElement('canvas');
+        QRCode.toCanvas(canvas, url, { width: 170, margin: 1, color: { dark: '#111827', light: '#ffffff' } }, (err) => {
+            if(!err) container.appendChild(canvas);
         });
     }
 
