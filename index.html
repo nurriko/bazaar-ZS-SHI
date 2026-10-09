@@ -19,7 +19,7 @@
     <!-- FIREBASE SDK (MODULAR) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit, writeBatch, increment } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit, writeBatch, increment, runTransaction } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyCv-wlyi4DXxhA-z5mI52-8DeLxpwLaNj8",
@@ -40,7 +40,7 @@
             db = getFirestore(app);
         }
 
-        window.db = db; window.doc = doc; window.setDoc = setDoc; window.addDoc = addDoc; window.updateDoc = updateDoc; window.deleteDoc = deleteDoc; window.collection = collection; window.query = query; window.orderBy = orderBy; window.limit = limit; window.onSnapshot = onSnapshot; window.writeBatch = writeBatch; window.increment = increment;
+        window.db = db; window.doc = doc; window.setDoc = setDoc; window.addDoc = addDoc; window.updateDoc = updateDoc; window.deleteDoc = deleteDoc; window.collection = collection; window.query = query; window.orderBy = orderBy; window.limit = limit; window.onSnapshot = onSnapshot; window.writeBatch = writeBatch; window.increment = increment; window.runTransaction = runTransaction;
         window.dispatchEvent(new Event('firebase-ready'));
     </script>
 
@@ -686,23 +686,64 @@
         // Penulisan massal: semua operasi dikumpulkan lalu dikirim 1x per 400 dokumen (atomic per chunk)
         const WB = {
             q: [],
-            update(ref, data) { this.q.push(b => b.update(ref, data)); return null; },
-            set(ref, data)    { this.q.push(b => b.set(ref, data)); return null; },
-            del(ref)          { this.q.push(b => b.delete(ref)); return null; },
-            add(colRef, data) { this.q.push(b => b.set(window.doc(colRef), data)); return null; },
-            async flush() {
+            _push(fn, w = 1) { this.q.push({ fn, w }); return null; },
+            update(ref, data) { return this._push(b => b.update(ref, data)); },
+            set(ref, data)    { return this._push(b => b.set(ref, data)); },
+            del(ref)          { return this._push(b => b.delete(ref)); },
+            // Hapus HANYA jika dokumen masih ada. Jika sudah dihapus user lain, operasi gagal
+            // sehingga stok tidak dikembalikan 2x.
+            delExisting(ref)  { return this._push(b => { b.update(ref, { _del: true }); b.delete(ref); }, 2); },
+            add(colRef, data) { return this._push(b => b.set(window.doc(colRef), data)); },
+            // checks: [{ref, need, label}] -> stok master dicek ulang di server (transaksi) sebelum menulis
+            async flush(checks) {
                 const ops = this.q.splice(0);
-                const jobs = [];
-                for (let i = 0; i < ops.length; i += 400) {
-                    const batch = window.writeBatch(db);
-                    ops.slice(i, i + 400).forEach(fn => fn(batch));
-                    jobs.push(batch.commit());
+                const totalW = ops.reduce((a, o) => a + o.w, 0);
+                if (checks && checks.length && navigator.onLine && window.runTransaction && totalW <= 450) {
+                    await window.runTransaction(db, async (tx) => {
+                        for (const c of checks) {
+                            const snap = await tx.get(c.ref);
+                            const avail = snap.exists() ? (Number(snap.data().total) || 0) : 0;
+                            if (avail < c.need) throw new Error('APP:Stok ' + c.label + ' tidak cukup. Tersisa ' + avail + ' pcs (baru berkurang karena permintaan user lain). Silakan cek ulang jumlahnya.');
+                        }
+                        ops.forEach(o => o.fn(tx));
+                    });
+                    return;
                 }
+                const jobs = []; let cur = [], w = 0;
+                const commit = () => { if (!cur.length) return; const batch = window.writeBatch(db); cur.forEach(o => o.fn(batch)); jobs.push(batch.commit()); cur = []; w = 0; };
+                ops.forEach(o => { if (w + o.w > 450) commit(); cur.push(o); w += o.w; });
+                commit();
                 // Offline: tulis ke cache lokal & sinkron otomatis nanti, jangan menggantung loader
                 if (!navigator.onLine) { jobs.forEach(j => j.catch(e => console.error(e))); return; }
                 await Promise.all(jobs);
             }
         };
+
+        // Pesan error yang jelas untuk user (bukan hanya console)
+        function showWriteError(e) {
+            hideGlobalLoader();
+            console.error(e);
+            const msg = String((e && e.message) || e || '');
+            const code = e && e.code;
+            let text;
+            if (msg.includes('APP:')) text = msg.slice(msg.indexOf('APP:') + 4);
+            else if (code === 'not-found') text = 'Data sudah diubah atau dihapus oleh user lain. Layar sudah diperbarui, silakan cek lalu ulangi.';
+            else if (code === 'permission-denied') text = 'Akses ditolak oleh server (aturan keamanan Firestore).';
+            else if (code === 'resource-exhausted') text = 'Kuota harian Firestore habis. Coba lagi besok atau upgrade paket Firebase.';
+            else if (code === 'unavailable' || code === 'deadline-exceeded') text = 'Koneksi ke server bermasalah. Periksa internet lalu coba lagi.';
+            else if (code === 'aborted' || code === 'failed-precondition') text = 'Data sedang diubah user lain. Silakan coba lagi.';
+            else text = 'Terjadi kesalahan: ' + (msg || 'tidak diketahui');
+            try { if (currentUser) renderTablesBazaar(); } catch (_) {}
+            return UI.alert('Gagal Menyimpan', text, 'error');
+        }
+
+        function forceLogout(msg) {
+            currentUser = null; sessionStorage.removeItem('loggedInUser');
+            activeBazaarName = ""; sessionStorage.removeItem('activeBazaarName');
+            try { closeScanner(); } catch (_) {}
+            hideGlobalLoader(); showLogin();
+            UI.alert('Sesi Berakhir', msg, 'warning');
+        }
 
         const DB = {
             get: function(colName) { return window.appState[colName] || []; },
@@ -733,6 +774,11 @@
                     }
 
                     window.appState[col] = fetchedItems;
+                    if (col === 'users' && isAppReady && currentUser && !snapshot.metadata.fromCache) {
+                        const me = fetchedItems.find(u => String(u.username).toLowerCase() === String(currentUser.username).toLowerCase());
+                        if (!me) forceLogout('Akun Anda telah dihapus oleh admin.');
+                        else if (me.password !== currentUser.password || me.departemen !== currentUser.departemen) forceLogout('Data akun Anda diubah. Silakan login ulang.');
+                    }
                     if (col === 'master_inventory') {
                         masterVer++;
                         masterMap = new Map(fetchedItems.map(m => [String(m.code || '').toLowerCase(), m]));
@@ -785,7 +831,7 @@
 
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => { 
-                navigator.serviceWorker.register('./sw.js?v=update4').catch(e => console.log(e)); 
+                navigator.serviceWorker.register('./sw.js?v=update5').catch(e => console.log(e)); 
             });
         }
 
@@ -1151,14 +1197,19 @@
             try {
                 let users = DB.get('users');
                 if(!users.find(u => u.username.toLowerCase() === user.toLowerCase())) {
-                    await window.setDoc(window.doc(db, 'users', user.toLowerCase()), { username: user, password: pass, departemen: dept });
+                    {
+                        const uRef = window.doc(db, 'users', user.toLowerCase()); const uData = { username: user, password: pass, departemen: dept };
+                        if (navigator.onLine && window.runTransaction) {
+                            await window.runTransaction(db, async (tx) => { const sn = await tx.get(uRef); if (sn.exists()) throw new Error('APP:Username sudah digunakan.'); tx.set(uRef, uData); });
+                        } else { await window.setDoc(uRef, uData); }
+                    }
                     hideGlobalLoader();
                     UI.alert("Berhasil", "Silakan login.", "success"); showLogin(); 
                 } else {
                     hideGlobalLoader();
                     UI.alert("Gagal", "Username sudah digunakan.", "error");
                 }
-            } catch(e) { hideGlobalLoader(); console.error(e); }
+            } catch (e) { showWriteError(e); }
         }
         async function lupaPassword() {
             if (loadedCollections.size < totalCollectionsToLoad) return UI.alert("Loading", "Harap tunggu sistem selesai memuat data...", "warning");
@@ -1173,7 +1224,7 @@
                 await window.updateDoc(window.doc(db, 'users', userItem._docId), { password: newPass });
                 hideGlobalLoader();
                 UI.alert("Sukses", "Password diperbarui.", "success"); 
-            } catch(e) { hideGlobalLoader(); console.error(e); }
+            } catch (e) { showWriteError(e); }
         }
         async function logout() { 
             let conf = await UI.confirm("Keluar?", "Yakin keluar?", "question"); 
@@ -1332,8 +1383,8 @@
                         let finalKet = ketSales || "-";
                         let prevNote = (existing.keterangan_sales && existing.keterangan_sales !== "-") ? existing.keterangan_sales + " | " : "";
                         let updatedData = {
-                            original_qty: existing.original_qty + qty,
-                            qty_in: existing.qty_in + qty,
+                            original_qty: window.increment(qty),
+                            qty_in: window.increment(qty),
                             status_pengiriman: 'Menunggu Refill Gudang',
                             req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}),
                             keterangan_gudang: '-',
@@ -1350,13 +1401,13 @@
                         }));
                     }
                 });
-                await WB.flush();
+                await WB.flush(codesToUpdate.map(d => ({ ref: window.doc(db, 'master_inventory', d.ref._docId), need: qty, label: d.code })));
                 
                 logActivity('Request Barang', `Meminta manual sebanyak ${qty} pcs untuk bazaar ${activeBazaarName}`);
                 hideGlobalLoader();
                 UI.alert("Berhasil", "Menunggu Gudang.", "success");
                 document.getElementById('itemQty').value = ''; document.getElementById('itemKeterangan').value = ''; document.getElementById('productSelect').value = ''; renderVariants();
-            } catch(e) { hideGlobalLoader(); console.error(e); }
+            } catch (e) { showWriteError(e); }
         }
 
         // CSV SALES PARSE
@@ -1431,8 +1482,8 @@
                     if (existing) { 
                         let prevNote = (existing.keterangan_sales && existing.keterangan_sales !== "-") ? existing.keterangan_sales + " | " : "";
                         let updatedData = {
-                            original_qty: existing.original_qty + d.qty,
-                            qty_in: existing.qty_in + d.qty,
+                            original_qty: window.increment(d.qty),
+                            qty_in: window.increment(d.qty),
                             status_pengiriman: 'Menunggu Refill Gudang',
                             req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}),
                             keterangan_gudang: '-',
@@ -1449,13 +1500,13 @@
                         }));
                     }
                 });
-                await WB.flush();
+                await WB.flush(pendingUploadData.map(d => ({ ref: window.doc(db, 'master_inventory', d._mDocId), need: d.qty, label: d.code })));
 
                 logActivity('Upload Permintaan', `Mengupload data permintaan via CSV untuk bazaar ${activeBazaarName}`);
                 hideGlobalLoader();
                 UI.alert("Sukses", "Data dikirim ke Gudang.", "success");
                 batalUploadBawaan(); openTab('tab-stok'); 
-            } catch (e) { hideGlobalLoader(); console.error(e); }
+            } catch (e) { showWriteError(e); }
         }
         function batalUploadBawaan() { pendingUploadData = []; document.getElementById('uploadPreviewSection').classList.add('hidden'); document.getElementById('fileBawaan').value = ''; }
 
@@ -1559,7 +1610,7 @@
             let items = DB.get('bazaar_items');
             let invItems = DB.get('master_inventory');
             let item = items.find(i => String(i.id) === String(currentPackingId));
-            if(!item) return;
+            if(!item) { closePackingModal(); return UI.alert("Data Berubah", "Barang ini sudah dihapus oleh user lain.", "warning"); }
 
             let st = document.getElementById('packStatus').value;
             let mode = document.getElementById('packModeKardus').value;
@@ -1607,24 +1658,34 @@
             
             showGlobalLoader();
             try {
-                let promises = [];
-                promises.push(window.updateDoc(window.doc(db, 'bazaar_items', item._docId), {
-                    status_pengiriman: statusPengiriman,
-                    kardus: finalKardus,
-                    keterangan_gudang: finalKet,
-                    qty_in: qReal
-                }));
-
-                if (diffStore !== 0) {
-                    let mItem = getMaster(item.code);
-                    if(mItem) promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(diffStore) }));
+                const iRef = window.doc(db, 'bazaar_items', item._docId);
+                const mItem = getMaster(item.code);
+                const payload = { status_pengiriman: statusPengiriman, kardus: finalKardus, keterangan_gudang: finalKet, qty_in: qReal };
+                if (navigator.onLine && window.runTransaction) {
+                    await window.runTransaction(db, async (tx) => {
+                        const snap = await tx.get(iRef);
+                        if (!snap.exists()) throw new Error('APP:Barang ini sudah dihapus oleh user lain.');
+                        const cur = snap.data();
+                        if (cur.status !== 'active') throw new Error('APP:Barang ini sudah selesai diopname, tidak bisa dikemas ulang.');
+                        const diff = cur.qty_in - qReal;   // dihitung dari data TERBARU di server
+                        if (diff !== 0 && mItem) {
+                            const mRef = window.doc(db, 'master_inventory', mItem._docId);
+                            const mSnap = await tx.get(mRef);
+                            const avail = mSnap.exists() ? (Number(mSnap.data().total) || 0) : 0;
+                            if (diff < 0 && avail < -diff) throw new Error(`APP:Stok master ${item.code} tidak cukup (tersisa ${avail} pcs).`);
+                            tx.update(mRef, { total: window.increment(diff) });
+                        }
+                        tx.update(iRef, payload);
+                    });
+                } else {
+                    WB.update(iRef, payload);
+                    if (diffStore !== 0 && mItem) WB.update(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(diffStore) });
+                    await WB.flush();
                 }
-
-                await Promise.all(promises);
                 logActivity('Packing Barang', `Packing kode ${item.code} dengan jumlah ${qReal} (Status: ${st})`);
                 hideGlobalLoader();
                 closePackingModal();
-            } catch(e) { hideGlobalLoader(); UI.alert("Ditolak", e, "error"); }
+            } catch(e) { showWriteError(e); }
         }
 
         // ==========================================
@@ -1644,7 +1705,7 @@
                     try {
                         await window.updateDoc(window.doc(db, 'bazaar_items', item._docId), { status_pengiriman: 'Diterima Sales', qty_revisi_sales: item.qty_in });
                         logActivity('Terima Barang', `Menerima barang sesuai sistem gudang`);
-                    } catch(e) { console.log(e); }
+                    } catch(e) { showWriteError(e); }
                 }
             } 
         }
@@ -1669,22 +1730,35 @@
             }
 
             try {
-                let promises = [];
-                let prevNote = (itemRef.keterangan_sales && itemRef.keterangan_sales !== "-") ? itemRef.keterangan_sales + " | " : "";
-                promises.push(window.updateDoc(window.doc(db, 'bazaar_items', itemRef._docId), {
-                    qty_revisi_sales: newQty,
-                    status_pengiriman: 'Diterima Sales (Revisi)',
-                    keterangan_sales: prevNote + `Revisi Terima: ${newQty} pcs (${note || 'Tanpa keterangan'})`
-                }));
-
-                if (diffStore !== 0) {
-                    let mItem = getMaster(itemRef.code);
-                    if(mItem) promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(diffStore) }));
+                const iRef = window.doc(db, 'bazaar_items', itemRef._docId);
+                const mItem = getMaster(itemRef.code);
+                const mk = (cur) => {
+                    let prevNote = (cur.keterangan_sales && cur.keterangan_sales !== "-") ? cur.keterangan_sales + " | " : "";
+                    return { qty_revisi_sales: newQty, status_pengiriman: 'Diterima Sales (Revisi)', keterangan_sales: prevNote + `Revisi Terima: ${newQty} pcs (${note || 'Tanpa keterangan'})` };
+                };
+                if (navigator.onLine && window.runTransaction) {
+                    await window.runTransaction(db, async (tx) => {
+                        const snap = await tx.get(iRef);
+                        if (!snap.exists()) throw new Error('APP:Barang ini sudah dihapus oleh user lain.');
+                        const cur = snap.data();
+                        if (cur.status_pengiriman !== 'Dikemas') throw new Error('APP:Barang ini sudah diproses oleh user lain atau statusnya berubah.');
+                        const diff = cur.qty_in - newQty;
+                        if (diff !== 0 && mItem) {
+                            const mRef = window.doc(db, 'master_inventory', mItem._docId);
+                            const mSnap = await tx.get(mRef);
+                            const avail = mSnap.exists() ? (Number(mSnap.data().total) || 0) : 0;
+                            if (diff < 0 && avail < -diff) throw new Error(`APP:Stok master ${itemRef.code} tidak cukup (tersisa ${avail} pcs).`);
+                            tx.update(mRef, { total: window.increment(diff) });
+                        }
+                        tx.update(iRef, mk(cur));
+                    });
+                } else {
+                    WB.update(iRef, mk(itemRef));
+                    if (diffStore !== 0 && mItem) WB.update(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(diffStore) });
+                    await WB.flush();
                 }
-
-                await Promise.all(promises);
                 logActivity('Revisi Terima', `Menerima kode: ${itemRef.code} dengan revisi QTY: ${newQty} pcs`);
-            } catch (e) { console.log(e); }
+            } catch (e) { showWriteError(e); }
         }
 
         async function catatPenjualan(id) {
@@ -1704,17 +1778,25 @@
             let res = await UI.salePrompt(`Jual`, `Sisa: ${sisa}`, dOpt, sisa); if(!res) return;
             
             try {
-                let sHist = [...(itemRef.sales_history || [])];
-                sHist.push({ date: res.date, qty: res.qty });
-                await window.updateDoc(window.doc(db, 'bazaar_items', itemRef._docId), {
-                    qty_sold: window.increment(res.qty),
-                    sales_history: sHist
-                });
+                const iRef = window.doc(db, 'bazaar_items', itemRef._docId);
+                if (navigator.onLine && window.runTransaction) {
+                    await window.runTransaction(db, async (tx) => {
+                        const snap = await tx.get(iRef);
+                        if (!snap.exists()) throw new Error('APP:Barang ini sudah dihapus oleh user lain.');
+                        const cur = snap.data();
+                        if (cur.status !== 'active') throw new Error('APP:Barang ini sudah diopname, penjualan tidak bisa dicatat.');
+                        const aq = cur.qty_revisi_sales !== undefined ? cur.qty_revisi_sales : cur.qty_in;
+                        const sisaNow = aq - cur.qty_sold;
+                        if (res.qty > sisaNow) throw new Error(`APP:Sisa stok sekarang hanya ${sisaNow} pcs (baru berubah karena penjualan lain). Silakan catat ulang.`);
+                        tx.update(iRef, { qty_sold: cur.qty_sold + res.qty, sales_history: [...(cur.sales_history || []), { date: res.date, qty: res.qty }] });
+                    });
+                } else {
+                    await window.updateDoc(iRef, { qty_sold: window.increment(res.qty), sales_history: [...(itemRef.sales_history || []), { date: res.date, qty: res.qty }] });
+                }
                 logActivity('Jual Barang', `Penjualan kode: ${itemRef.code} sebanyak ${res.qty} pcs`);
-            } catch(e) { console.log(e); }
+            } catch(e) { showWriteError(e); }
         }
 
-        // --- FITUR KARDUS DISPLAY (TAMBAH & BATAL/EDIT) ---
         async function mintaKardusDisplay(id) {
             let item = getItem(id); if(!item) return;
 
@@ -1729,23 +1811,23 @@
                 try {
                     let promises = [];
                     let mItem = getMaster(item.code);
-                    if(mItem) promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(-reqQty) }));
+                    if(mItem) promises.push(WB.update(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(-reqQty) }));
 
                     let prevNote = (item.keterangan_sales && item.keterangan_sales !== "-") ? item.keterangan_sales + " | " : "";
-                    promises.push(window.updateDoc(window.doc(db, 'bazaar_items', item._docId), {
-                        original_qty: item.original_qty + reqQty,
-                        qty_in: item.qty_in + reqQty,
+                    promises.push(WB.update(window.doc(db, 'bazaar_items', item._docId), {
+                        original_qty: window.increment(reqQty),
+                        qty_in: window.increment(reqQty),
                         status_pengiriman: 'Menunggu Refill Gudang',
                         req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}),
                         keterangan_sales: prevNote + `[KARDUS DISPLAY: ${reqQty} pcs]`,
                         display_req_qty: reqQty,
                         display_req_type: 'tambahan'
                     }));
-                    await Promise.all(promises);
+                    await WB.flush(mItem ? [{ ref: window.doc(db, 'master_inventory', mItem._docId), need: reqQty, label: item.code }] : null);
                     logActivity('Req Display', `Meminta Kardus Display kode: ${item.code} qty: ${reqQty}`);
                     hideGlobalLoader();
                     UI.alert("Sukses", `Permintaan Kardus Display berhasil dikirim ke Gudang.`, "success");
-                } catch(e) { hideGlobalLoader(); console.error(e); }
+                } catch (e) { showWriteError(e); }
             } else {
                  if (item.status_pengiriman === 'Dikemas' || item.status_pengiriman === 'Diterima Sales' || item.status_pengiriman === 'Diterima Sales (Revisi)') {
                      hideGlobalLoader();
@@ -1761,7 +1843,7 @@
                      logActivity('Req Display', `Meminta Kardus Display kode: ${item.code} qty: ${reqQty}`);
                      hideGlobalLoader();
                      UI.alert("Sukses", `Permintaan Kardus Display berhasil dikirim ke Gudang.`, "success");
-                 } catch(e) { hideGlobalLoader(); console.error(e); }
+                 } catch (e) { showWriteError(e); }
             }
         }
 
@@ -1773,37 +1855,38 @@
 
             showGlobalLoader();
             try {
-                let promises = [];
-                let noteToRemove = `[KARDUS DISPLAY: ${item.display_req_qty} pcs]`;
-                let newKet = item.keterangan_sales.replace(noteToRemove, '').trim();
-                if(newKet.endsWith('|')) newKet = newKet.slice(0, -1).trim();
-                if(newKet === '' || newKet === '|') newKet = '-';
-
-                if (item.display_req_type === 'tambahan') {
-                    let mItem = getMaster(item.code);
-                    if(mItem) promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(item.display_req_qty) }));
-                    
-                    promises.push(window.updateDoc(window.doc(db, 'bazaar_items', item._docId), {
-                        original_qty: item.original_qty - item.display_req_qty,
-                        qty_in: item.qty_in - item.display_req_qty,
-                        keterangan_sales: newKet,
-                        display_req_qty: 0,
-                        display_req_type: null
-                    }));
+                const iRef = window.doc(db, 'bazaar_items', item._docId);
+                const mItem = getMaster(item.code);
+                const build = (cur) => {
+                    const q = cur.display_req_qty || 0;
+                    if (q <= 0) throw new Error('APP:Permintaan display ini sudah dibatalkan oleh user lain.');
+                    let newKet = String(cur.keterangan_sales || '-').replace(`[KARDUS DISPLAY: ${q} pcs]`, '').trim();
+                    if (newKet.endsWith('|')) newKet = newKet.slice(0, -1).trim();
+                    if (newKet === '' || newKet === '|') newKet = '-';
+                    const upd = { keterangan_sales: newKet, display_req_qty: 0, display_req_type: null };
+                    const restore = cur.display_req_type === 'tambahan';
+                    if (restore) { upd.original_qty = window.increment(-q); upd.qty_in = window.increment(-q); }
+                    return { upd, restore, q };
+                };
+                if (navigator.onLine && window.runTransaction) {
+                    await window.runTransaction(db, async (tx) => {
+                        const snap = await tx.get(iRef);
+                        if (!snap.exists()) throw new Error('APP:Barang ini sudah dihapus oleh user lain.');
+                        const { upd, restore, q } = build(snap.data());
+                        if (restore && mItem) tx.update(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(q) });
+                        tx.update(iRef, upd);
+                    });
                 } else {
-                    promises.push(window.updateDoc(window.doc(db, 'bazaar_items', item._docId), {
-                        keterangan_sales: newKet,
-                        display_req_qty: 0,
-                        display_req_type: null
-                    }));
+                    const { upd, restore, q } = build(item);
+                    WB.update(iRef, upd);
+                    if (restore && mItem) WB.update(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(q) });
+                    await WB.flush();
                 }
-                await Promise.all(promises);
                 logActivity('Batal Display', `Membatalkan Kardus Display kode: ${item.code}`);
                 hideGlobalLoader();
                 UI.alert("Sukses", "Permintaan Kardus Display berhasil dibatalkan.", "success");
-            } catch(e) { hideGlobalLoader(); console.error(e); }
+            } catch(e) { showWriteError(e); }
         }
-
         async function stockOpname(id) {
             let itemRef = getItem(id); if(!itemRef) return; 
             let actualQty = itemRef.qty_revisi_sales !== undefined ? itemRef.qty_revisi_sales : itemRef.qty_in;
@@ -1814,11 +1897,21 @@
             
             showGlobalLoader();
             try {
-                await window.updateDoc(window.doc(db, 'bazaar_items', itemRef._docId), { fisik_kembali: fisik, status: 'done' });
+                const iRef = window.doc(db, 'bazaar_items', itemRef._docId);
+                if (navigator.onLine && window.runTransaction) {
+                    await window.runTransaction(db, async (tx) => {
+                        const snap = await tx.get(iRef);
+                        if (!snap.exists()) throw new Error('APP:Barang ini sudah dihapus oleh user lain.');
+                        if (snap.data().status === 'done') throw new Error('APP:Barang ini sudah diopname oleh user lain.');
+                        tx.update(iRef, { fisik_kembali: fisik, status: 'done' });
+                    });
+                } else {
+                    await window.updateDoc(iRef, { fisik_kembali: fisik, status: 'done' });
+                }
                 logActivity('Stock Opname', `SO kode: ${itemRef.code} dengan stok fisik: ${fisik}`);
                 hideGlobalLoader();
                 UI.alert("Sukses", "Opname disimpan", "success");
-            } catch(e) { hideGlobalLoader(); console.error(e); }
+            } catch (e) { showWriteError(e); }
         }
         
         async function hapusBazaarData(bName) {
@@ -1827,7 +1920,7 @@
             promises.push(WB.del(window.doc(db, 'bazaars_list', bName)));
             
             itemsToRemove.forEach(item => { 
-                promises.push(WB.del(window.doc(db, 'bazaar_items', item._docId)));
+                promises.push(WB.delExisting(window.doc(db, 'bazaar_items', item._docId)));
                 let mItem = getMaster(item.code); 
                 if(mItem) {
                     let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
@@ -1836,8 +1929,8 @@
             });
             await WB.flush();
         }
-        async function hapusBazaarSales() { let sel = document.getElementById('salesBazaarSelect').value; if(!sel || sel === 'NEW') return; let conf = await UI.confirm("Hapus?", "Yakin hapus bazaar?", "error"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus Bazaar', `Sales menghapus bazaar: ${sel}`); await hapusBazaarData(sel); populateSalesBazaarDropdown(); hideGlobalLoader(); UI.alert("Sukses", "Bazaar dihapus", "success"); }, 100); } }
-        async function hapusBazaarAdmin(bName) { let conf = await UI.confirm("Hapus?", `Yakin hapus ${bName}?`, "error"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus Bazaar', `Superadmin menghapus bazaar: ${bName}`); await hapusBazaarData(bName); hideGlobalLoader(); UI.alert("Sukses", "Terhapus", "success"); }, 100); } }
+        async function hapusBazaarSales() { let sel = document.getElementById('salesBazaarSelect').value; if(!sel || sel === 'NEW') return; let conf = await UI.confirm("Hapus?", "Yakin hapus bazaar?", "error"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus Bazaar', `Sales menghapus bazaar: ${sel}`); try { await hapusBazaarData(sel); } catch(e) { return showWriteError(e); } populateSalesBazaarDropdown(); hideGlobalLoader(); UI.alert("Sukses", "Bazaar dihapus", "success"); }, 100); } }
+        async function hapusBazaarAdmin(bName) { let conf = await UI.confirm("Hapus?", `Yakin hapus ${bName}?`, "error"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus Bazaar', `Superadmin menghapus bazaar: ${bName}`); try { await hapusBazaarData(bName); } catch(e) { return showWriteError(e); } hideGlobalLoader(); UI.alert("Sukses", "Terhapus", "success"); }, 100); } }
         
         async function hapusBarang(id) { 
             let itemRef = getItem(id); if(!itemRef) return; 
@@ -1845,20 +1938,28 @@
             
             showGlobalLoader();
             try {
-                let promises = [];
-                promises.push(window.deleteDoc(window.doc(db, 'bazaar_items', itemRef._docId)));
-                let mItem = getMaster(itemRef.code); 
-                if(mItem) {
-                    let actualQty = itemRef.qty_revisi_sales !== undefined ? itemRef.qty_revisi_sales : itemRef.qty_in;
-                    promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(actualQty - itemRef.qty_sold) }));
+                const iRef = window.doc(db, 'bazaar_items', itemRef._docId);
+                const mItem = getMaster(itemRef.code);
+                const restoreOf = (it) => (it.qty_revisi_sales !== undefined ? it.qty_revisi_sales : it.qty_in) - it.qty_sold;
+                if (navigator.onLine && window.runTransaction) {
+                    await window.runTransaction(db, async (tx) => {
+                        const snap = await tx.get(iRef);
+                        if (!snap.exists()) throw new Error('APP:Barang ini sudah dihapus oleh user lain.');
+                        const it = snap.data();
+                        if (it.status !== 'active') throw new Error('APP:Barang ini sudah diopname, tidak bisa dihapus dari sini.');
+                        if (mItem) tx.update(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(restoreOf(it)) });
+                        tx.delete(iRef);
+                    });
+                } else {
+                    WB.delExisting(iRef);
+                    if (mItem) WB.update(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(restoreOf(itemRef)) });
+                    await WB.flush();
                 }
-                await Promise.all(promises);
                 logActivity('Hapus Barang', `Menghapus permintaan barang kode: ${itemRef.code}`);
                 hideGlobalLoader();
                 UI.alert("Sukses", "Terhapus", "success"); 
-            } catch(e) { hideGlobalLoader(); console.error(e); }
+            } catch(e) { showWriteError(e); }
         }
-
         async function hapusSemuaBarang() { 
             let conf = await UI.confirm("Hapus Semua?", "Semua dikembalikan ke master?", "error"); if(!conf) return; 
             let itemsToRemove = DB.get('bazaar_items').filter(item => { let match = activeBazaarName ? (item.bazaar_name === activeBazaarName) : true; return match && item.status === 'active'; });
@@ -1867,7 +1968,7 @@
             try {
                 let promises = [];
                 itemsToRemove.forEach(item => { 
-                    promises.push(WB.del(window.doc(db, 'bazaar_items', item._docId)));
+                    promises.push(WB.delExisting(window.doc(db, 'bazaar_items', item._docId)));
                     let mItem = getMaster(item.code); 
                     if(mItem) {
                         let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
@@ -1878,7 +1979,7 @@
                 logActivity('Hapus Semua Barang', `Menghapus semua stok berjalan dari bazaar aktif`);
                 hideGlobalLoader();
                 UI.alert("Sukses", "Semua terhapus", "success"); 
-            } catch(e) { hideGlobalLoader(); console.error(e); }
+            } catch (e) { showWriteError(e); }
         }
 
         async function hapusRiwayat(id) { 
@@ -1886,7 +1987,7 @@
             if(conf) { 
                 showGlobalLoader(); 
                 let item = getItem(id);
-                if(item) await window.deleteDoc(window.doc(db, 'bazaar_items', item._docId));
+                try { if(item) await window.deleteDoc(window.doc(db, 'bazaar_items', item._docId)); } catch(e) { return showWriteError(e); }
                 logActivity('Hapus Riwayat', `Menghapus satu riwayat opname`); 
                 hideGlobalLoader(); 
             } 
@@ -1897,7 +1998,7 @@
                 showGlobalLoader(); 
                 let toDelete = DB.get('bazaar_items').filter(i => i.status === 'done');
                 let promises = toDelete.map(item => WB.del(window.doc(db, 'bazaar_items', item._docId)));
-                await WB.flush();
+                try { await WB.flush(); } catch(e) { return showWriteError(e); }
                 logActivity('Hapus Semua Riwayat', `Mengosongkan semua riwayat opname`); 
                 hideGlobalLoader(); 
             } 
@@ -1905,6 +2006,7 @@
 
         // RENDERING TABEL TER-OPTIMASI DENGAN PAGINATION
         function renderTablesBazaar() {
+            if (!currentUser) return;
             let items = DB.get('bazaar_items'); 
             let tbSK = document.getElementById('tableBodySOKeluar'); 
             let tbS = document.getElementById('tableBodyStok'); 
@@ -2141,7 +2243,7 @@
             let bazaars = DB.get('bazaars_list'); let tbodyB = document.getElementById('tableBodyBazaarsAdmin');
             if(tbodyB) tbodyB.innerHTML = bazaars.map(b => `<tr><td>${esc(b.name)}</td><td>${esc(b.start_date)}</td><td><button class="btn-danger" data-b="${esc(b.name)}" onclick="hapusBazaarAdmin(this.dataset.b)">Hapus</button></td></tr>`).join('');
         }
-        async function hapusUser(username) { let conf = await UI.confirm("Hapus?", `Hapus ${username}?`, "warning"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus User', `Menghapus user: ${username}`); await window.deleteDoc(window.doc(db, 'users', username.toLowerCase())); hideGlobalLoader(); UI.alert("Sukses", "User dihapus.", "success"); }, 100); } }
+        async function hapusUser(username) { let conf = await UI.confirm("Hapus?", `Hapus ${username}?`, "warning"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus User', `Menghapus user: ${username}`); try { await window.deleteDoc(window.doc(db, 'users', username.toLowerCase())); } catch(e) { return showWriteError(e); } hideGlobalLoader(); UI.alert("Sukses", "User dihapus.", "success"); }, 100); } }
         
         async function tambahMasterManual() {
             let brand = document.getElementById('masBrand').value.trim();
@@ -2180,7 +2282,7 @@
                 document.getElementById('masCollection').value = ''; document.getElementById('masBTK').value = '';
                 document.getElementById('masGU').value = ''; document.getElementById('masGREC').value = '';
                 document.getElementById('masGTOK').value = ''; document.getElementById('masGWEB').value = '';
-            } catch(e) { hideGlobalLoader(); console.error(e); }
+            } catch (e) { showWriteError(e); }
         }
 
         async function prosesUploadCSV() {
@@ -2213,7 +2315,7 @@
                     UI.alert("Sukses", "Data Master berhasil di-update dari CSV.", "success"); 
                     fileInput.value = ''; 
                     document.getElementById('uploadStatusAdmin').innerHTML = '';
-                } catch(e) { hideGlobalLoader(); console.error(e); }
+                } catch (e) { showWriteError(e); }
             }; 
             reader.readAsText(fileInput.files[0]);
         }
@@ -2223,7 +2325,7 @@
                 showGlobalLoader(); 
                 let inv = DB.get('master_inventory');
                 let promises = inv.map(i => WB.del(window.doc(db, 'master_inventory', i._docId)));
-                await WB.flush();
+                try { await WB.flush(); } catch(e) { return showWriteError(e); }
                 logActivity('Kosongkan Master', `Menghapus seluruh Master Inventory Data`); 
                 hideGlobalLoader(); 
                 UI.alert("Sukses", "Semua data master berhasil dihapus.", "success");
