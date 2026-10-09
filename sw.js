@@ -1,60 +1,76 @@
-// Ganti nama cache agar tidak bentrok dengan yang lama
-const CACHE_NAME = 'zs-bazaar-ota-final';
+// Service Worker - Sistem Bazaar ZS & Shi (offline-first, lebih cepat)
+const CACHE_NAME = 'zs-bazaar-v3';
 
-const ASSETS_TO_CACHE = [
-    './index.html',
-    './manifest.json',
-    './icon-512.png',
+// File lokal & library eksternal yang di-cache saat install
+const LOCAL_ASSETS = ['./', './index.html', './manifest.json'];
+const CDN_ASSETS = [
     'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap',
-    'https://unpkg.com/html5-qrcode'
+    'https://unpkg.com/html5-qrcode',
+    'https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js',
+    'https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js'
 ];
+
+// Lalu lintas database JANGAN dicegat (Firestore punya cache offline sendiri)
+const BYPASS_HOSTS = ['firestore.googleapis.com', 'identitytoolkit.googleapis.com', 'securetoken.googleapis.com'];
 
 self.addEventListener('install', (event) => {
     self.skipWaiting();
     event.waitUntil(
-        caches.open(CACHE_NAME).then((cache) => {
-            return cache.addAll(ASSETS_TO_CACHE);
-        })
+        caches.open(CACHE_NAME).then((cache) =>
+            // allSettled: satu file gagal (mis. icon belum ada) tidak membatalkan seluruh instalasi
+            Promise.allSettled([...LOCAL_ASSETS, ...CDN_ASSETS].map((url) => cache.add(url)))
+        )
     );
 });
 
 self.addEventListener('activate', (event) => {
-    // PERINTAH SAPU BERSIH: Menghapus semua cache lama yang menyangkut di HP
     event.waitUntil(
-        caches.keys().then((cacheNames) => {
-            return Promise.all(
-                cacheNames.map((cache) => {
-                    if (cache !== CACHE_NAME) {
-                        return caches.delete(cache);
-                    }
-                })
-            );
-        })
+        caches.keys()
+            .then((names) => Promise.all(names.filter((n) => n !== CACHE_NAME).map((n) => caches.delete(n))))
+            .then(() => self.clients.claim())
     );
-    self.clients.claim();
 });
 
-// Strategi OTA: Network First, Fallback to Cache
-self.addEventListener('fetch', (event) => {
-    if (event.request.url.includes('firestore.googleapis.com') || event.request.url.includes('firebase')) {
-        return;
+// File aplikasi sendiri: Network First (update OTA), batas tunggu 4 detik lalu pakai cache
+async function networkFirst(request) {
+    const cache = await caches.open(CACHE_NAME);
+    try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 4000);
+        const response = await fetch(request, { signal: controller.signal });
+        clearTimeout(timer);
+        if (response && response.ok) cache.put(request, response.clone());
+        return response;
+    } catch (err) {
+        const cached = await cache.match(request, { ignoreSearch: true });
+        if (cached) return cached;
+        if (request.mode === 'navigate') {
+            const fallback = await cache.match('./index.html');
+            if (fallback) return fallback;
+        }
+        return new Response('Offline', { status: 503, statusText: 'Offline' });
     }
+}
 
-    event.respondWith(
-        fetch(event.request).then((networkResponse) => {
-            return caches.open(CACHE_NAME).then((cache) => {
-                cache.put(event.request, networkResponse.clone());
-                return networkResponse; 
-            });
-        }).catch(() => {
-            return caches.match(event.request).then((cachedResponse) => {
-                if (cachedResponse) {
-                    return cachedResponse;
-                }
-                if (event.request.mode === 'navigate') {
-                    return caches.match('./index.html');
-                }
-            });
-        })
-    );
+// Library CDN (Firebase SDK, font, scanner): tampil instan dari cache, diperbarui di belakang layar
+async function staleWhileRevalidate(request) {
+    const cache = await caches.open(CACHE_NAME);
+    const cached = await cache.match(request);
+    const refresh = fetch(request).then((response) => {
+        if (response && (response.ok || response.type === 'opaque')) cache.put(request, response.clone());
+        return response;
+    }).catch(() => null);
+    return cached || (await refresh) || new Response('', { status: 504 });
+}
+
+self.addEventListener('fetch', (event) => {
+    const request = event.request;
+    if (request.method !== 'GET') return;
+
+    const url = new URL(request.url);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+    if (BYPASS_HOSTS.some((h) => url.hostname === h)) return;
+
+    if (url.origin === self.location.origin) event.respondWith(networkFirst(request));
+    else event.respondWith(staleWhileRevalidate(request));
 });
