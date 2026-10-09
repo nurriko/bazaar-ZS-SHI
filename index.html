@@ -203,7 +203,7 @@
             <div id="sysModalText" class="modal-text"></div>
             
             <div id="sysModalInputContainer" class="form-group hidden" style="margin-bottom: 20px;">
-                <input type="number" id="sysModalInput" style="text-align: center; font-size: 1rem;">
+                <input type="text" id="sysModalInput" inputmode="text" autocomplete="off" style="text-align: center; font-size: 1rem;">
             </div>
             
             <div id="sysModalSelectContainer" class="form-group hidden" style="margin-bottom: 20px; text-align: left;">
@@ -320,7 +320,13 @@
                 <button id="btnTorch" class="btn-warning hidden" style="width:auto; padding:6px 12px; font-size:0.8rem;" onclick="toggleTorch()">🔦 Senter</button>
                 <label id="zoomWrap" class="hidden" style="flex:1; font-size:0.75rem; color:var(--secondary);">🔍 Zoom <input type="range" id="zoomRange" style="width:100%;" oninput="setScannerZoom(this.value)"></label>
             </div>
-            <p class="info-text" style="margin-top: 10px;">Kamera belakang aktif otomatis. Posisikan barcode mendatar di dalam kotak, jarak ±15–25 cm, cukup cahaya. Jika sulit fokus, mundurkan HP lalu naikkan Zoom, atau nyalakan Senter.</p>
+            <div style="display:flex; gap:8px; margin-top:10px;">
+                <button class="btn-info" style="flex:1; font-size:0.8rem;" onclick="scanFromPhotoStart()">📸 Foto Barcode</button>
+                <button class="btn-secondary" style="flex:1; font-size:0.8rem;" onclick="scanManualEntry()">⌨️ Ketik Kode</button>
+            </div>
+            <input type="file" id="scanPhotoInput" accept="image/*" capture="environment" style="display:none;" onchange="scanFromPhoto(this)">
+            <div id="qr-file-tmp" style="display:none;"></div>
+            <p class="info-text" style="margin-top: 10px;">Kamera belakang aktif otomatis. Barcode label kecil &amp; rapat: pegang HP stabil ±15–20 cm, barcode mendatar, tanpa pantulan cahaya. Bila tetap sulit, pakai <b>Foto Barcode</b> (hasil foto jauh lebih tajam) atau <b>Ketik Kode</b> sesuai tulisan di bawah barcode.</p>
         </div>
     </div>
 
@@ -779,7 +785,7 @@
 
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => { 
-                navigator.serviceWorker.register('./sw.js?v=update3').catch(e => console.log(e)); 
+                navigator.serviceWorker.register('./sw.js?v=update4').catch(e => console.log(e)); 
             });
         }
 
@@ -851,7 +857,7 @@
             },
             alert: async function(title, text, type = 'info') { return this._showModal(title, text, type, false, ""); },
             confirm: async function(title, text, type = 'warning', confirmTxt = "Ya", cancelTxt = "Batal") { return this._showModal(title, text, type, false, "", confirmTxt, false, [], cancelTxt); },
-            prompt: async function(title, text, defaultValue = "") { return this._showModal(title, text, "question", true, defaultValue, "Simpan"); },
+            prompt: async function(title, text, defaultValue = "", numeric = false) { const el = document.getElementById('sysModalInput'); el.inputMode = numeric ? 'numeric' : 'text'; return this._showModal(title, text, "question", true, defaultValue, "Simpan"); },
             select: async function(title, text, options) { return this._showModal(title, text, "select", false, "", "Pilih", true, options); },
             
             salePrompt: async function(title, text, dateOptions, maxQty) {
@@ -888,52 +894,108 @@
         // SCANNER LOGIC (Kamera lebih ringan & Auto Filter Cepat)
         // ==========================================
         let html5Qr = null, scannerStarting = false, scanHandled = false, scanTrack = null, torchOn = false;
+        let scanMode = null, scanStream = null, scanTimer = null, scanActionType = null;
+        const SCAN_FORMATS_NATIVE = ['code_128', 'code_39', 'code_93', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'itf', 'codabar', 'qr_code'];
+
+        // Detektor bawaan browser (Android Chrome): jauh lebih kuat untuk barcode kecil & rapat
+        async function getNativeDetector() {
+            if (!('BarcodeDetector' in window)) return null;
+            try {
+                const sup = await window.BarcodeDetector.getSupportedFormats();
+                const want = SCAN_FORMATS_NATIVE.filter(f => sup.includes(f));
+                if (!want.includes('code_128')) return null;
+                return new window.BarcodeDetector({ formats: want });
+            } catch (e) { return null; }
+        }
+
+        function onScanSuccess(text) {
+            if (scanHandled) return;
+            const code = String(text || '').trim();
+            if (!code) return;
+            scanHandled = true;
+            if (navigator.vibrate) navigator.vibrate(60);
+            const action = scanActionType;
+            closeScanner().then(() => setTimeout(() => handleScanResult(code, action), 50));
+        }
 
         async function openScanner(actionType) {
-            if (scannerStarting || html5Qr) return;
-            if (typeof Html5Qrcode === 'undefined') return UI.alert("Scanner Tidak Tersedia", "Library scanner belum termuat. Periksa koneksi internet lalu muat ulang halaman.", "error");
-            scannerStarting = true; scanHandled = false; torchOn = false;
+            if (scannerStarting || scanMode) return;
+            scanActionType = actionType; scannerStarting = true; scanHandled = false; torchOn = false;
             document.getElementById('scannerModal').classList.add('active');
-            const tools = document.getElementById('scannerTools'); tools.style.display = 'none';
+            document.getElementById('scannerTools').style.display = 'none';
             document.getElementById('btnTorch').classList.add('hidden'); document.getElementById('zoomWrap').classList.add('hidden');
-
-            const F = Html5QrcodeSupportedFormats;
-            html5Qr = new Html5Qrcode("qr-reader", {
-                // Hanya format yang relevan -> decoding jauh lebih cepat & akurat
-                formatsToSupport: [F.CODE_128, F.CODE_39, F.CODE_93, F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.ITF, F.CODABAR, F.QR_CODE],
-                experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-                verbose: false
-            });
-
             try {
-                await html5Qr.start(
-                    { facingMode: "environment" },   // langsung kamera belakang, tanpa pilihan kamera
-                    {
-                        fps: 15,
-                        // Area baca lebar (barcode 1D mendatar) = hampir selebar layar
-                        qrbox: (vw, vh) => ({ width: Math.floor(vw * 0.92), height: Math.floor(Math.max(90, Math.min(vh * 0.5, vw * 0.5))) }),
-                        videoConstraints: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }
-                    },
-                    (decodedText) => {
-                        if (scanHandled) return;
-                        scanHandled = true;
-                        if (navigator.vibrate) navigator.vibrate(60);
-                        closeScanner().then(() => setTimeout(() => handleScanResult(decodedText, actionType), 50));
-                    },
-                    () => {}
-                );
+                const det = await getNativeDetector();
+                if (det) await startNativeScanner(det);
+                else await startH5Scanner();
                 setupScannerTrack();
             } catch (err) {
                 console.error('Scanner error:', err);
                 await closeScanner();
-                const msg = String(err && (err.message || err)).toLowerCase();
+                const msg = String(err && (err.message || err.name || err)).toLowerCase();
                 if (msg.includes('permission') || msg.includes('notallowed')) UI.alert("Izin Kamera Ditolak", "Izinkan akses kamera untuk situs ini di pengaturan browser, lalu coba lagi.", "error");
                 else if (!window.isSecureContext) UI.alert("Kamera Butuh HTTPS", "Kamera hanya bisa dipakai jika aplikasi dibuka lewat https:// (bukan http:// atau file://).", "error");
-                else UI.alert("Kamera Gagal Dibuka", "Pastikan kamera tidak sedang dipakai aplikasi lain, lalu coba lagi.", "error");
+                else UI.alert("Kamera Gagal Dibuka", "Pastikan kamera tidak sedang dipakai aplikasi lain, lalu coba lagi. Anda juga bisa memakai Foto Barcode atau Ketik Kode.", "error");
             } finally { scannerStarting = false; }
         }
 
-        // Fokus kontinu, zoom awal, dan senter (jika didukung perangkat)
+        async function startNativeScanner(detector) {
+            const host = document.getElementById('qr-reader');
+            host.innerHTML = ''; host.style.position = 'relative';
+            const video = document.createElement('video');
+            video.setAttribute('playsinline', ''); video.setAttribute('autoplay', ''); video.muted = true;
+            video.style.cssText = 'width:100%; display:block; max-height:55vh; object-fit:cover;';
+            const guide = document.createElement('div');
+            guide.style.cssText = 'position:absolute; left:4%; right:4%; top:28%; bottom:28%; border:2px solid rgba(16,185,129,.9); border-radius:6px; pointer-events:none; box-shadow:0 0 0 9999px rgba(0,0,0,.28);';
+            host.appendChild(video); host.appendChild(guide);
+
+            scanStream = await navigator.mediaDevices.getUserMedia({
+                audio: false,
+                video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+            });
+            video.srcObject = scanStream;
+            await video.play();
+            scanMode = 'native';
+
+            let busy = false;
+            const tick = async () => {
+                if (scanMode !== 'native') return;
+                if (!busy && video.readyState >= 2 && !scanHandled) {
+                    busy = true;
+                    try {
+                        // Seluruh frame dibaca pada resolusi penuh (tidak di-crop) -> barcode rapat lebih mudah terbaca
+                        const found = await detector.detect(video);
+                        if (found && found.length) onScanSuccess(found[0].rawValue);
+                    } catch (e) { /* frame gagal, lanjut */ }
+                    busy = false;
+                }
+                scanTimer = setTimeout(tick, 60);
+            };
+            tick();
+        }
+
+        // Cadangan untuk browser tanpa BarcodeDetector (iPhone/Firefox)
+        async function startH5Scanner() {
+            if (typeof Html5Qrcode === 'undefined') throw new Error('Library scanner belum termuat');
+            const F = Html5QrcodeSupportedFormats;
+            html5Qr = new Html5Qrcode("qr-reader", {
+                formatsToSupport: [F.CODE_128, F.CODE_39, F.CODE_93, F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.ITF, F.CODABAR, F.QR_CODE],
+                experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+                verbose: false
+            });
+            await html5Qr.start(
+                { facingMode: "environment" },
+                {
+                    fps: 15,
+                    qrbox: (vw, vh) => ({ width: Math.floor(vw * 0.92), height: Math.floor(Math.max(90, Math.min(vh * 0.5, vw * 0.5))) }),
+                    videoConstraints: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }
+                },
+                (decodedText) => onScanSuccess(decodedText),
+                () => {}
+            );
+            scanMode = 'h5';
+        }
+
         async function setupScannerTrack() {
             try {
                 const video = document.querySelector('#qr-reader video');
@@ -948,8 +1010,7 @@
                 if (caps.zoom && caps.zoom.max > caps.zoom.min) {
                     const r = document.getElementById('zoomRange');
                     r.min = caps.zoom.min; r.max = caps.zoom.max; r.step = caps.zoom.step || 0.1;
-                    // Zoom awal 2x memudahkan fokus pada barcode kecil tanpa harus menempel ke kamera
-                    const z = Math.min(Math.max(2, caps.zoom.min), caps.zoom.max);
+                    const z = Math.min(Math.max(1.5, caps.zoom.min), caps.zoom.max);
                     r.value = z; await scanTrack.applyConstraints({ advanced: [{ zoom: z }] }).catch(() => {});
                     document.getElementById('zoomWrap').classList.remove('hidden'); shown = true;
                 }
@@ -962,12 +1023,53 @@
 
         async function closeScanner() {
             document.getElementById('scannerModal').classList.remove('active');
-            const q = html5Qr; html5Qr = null; scanTrack = null; torchOn = false;
+            if (scanTimer) { clearTimeout(scanTimer); scanTimer = null; }
+            const q = html5Qr; html5Qr = null; scanTrack = null; torchOn = false; scanMode = null;
+            if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
             if (q) {
                 try { if (q.isScanning) await q.stop(); } catch (e) { console.warn(e); }
                 try { q.clear(); } catch (e) {}
             }
+            const host = document.getElementById('qr-reader'); if (host) host.innerHTML = '';
         }
+
+        // ---- Alternatif: foto resolusi penuh dari kamera bawaan HP (paling andal untuk label rapat)
+        async function scanFromPhotoStart() {
+            await closeScanner();
+            document.getElementById('scanPhotoInput').click();
+        }
+        async function scanFromPhoto(input) {
+            const file = input.files && input.files[0]; input.value = '';
+            if (!file) return;
+            showGlobalLoader();
+            let text = null;
+            try {
+                const det = await getNativeDetector();
+                if (det) {
+                    const bmp = await createImageBitmap(file);
+                    const found = await det.detect(bmp);
+                    if (bmp.close) bmp.close();
+                    if (found && found.length) text = found[0].rawValue;
+                }
+                if (!text && typeof Html5Qrcode !== 'undefined') {
+                    const F = Html5QrcodeSupportedFormats;
+                    const q = new Html5Qrcode('qr-file-tmp', { formatsToSupport: [F.CODE_128, F.CODE_39, F.CODE_93, F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.ITF, F.CODABAR, F.QR_CODE], experimentalFeatures: { useBarCodeDetectorIfSupported: false }, verbose: false });
+                    try { text = await q.scanFile(file, false); } catch (e) { text = null; }
+                    try { q.clear(); } catch (e) {}
+                }
+            } catch (e) { console.warn('Foto scan:', e); }
+            hideGlobalLoader();
+            if (text && String(text).trim()) handleScanResult(String(text).trim(), scanActionType);
+            else UI.alert("Barcode Tidak Terbaca", "Foto kurang tajam atau barcode terpotong. Coba foto lagi dari jarak ±15 cm dengan barcode memenuhi lebar foto, atau gunakan Ketik Kode.", "warning");
+        }
+
+        // ---- Alternatif: ketik kode yang tertulis di bawah barcode
+        async function scanManualEntry() {
+            await closeScanner();
+            const code = await UI.prompt("Ketik Kode Barang", "Masukkan kode seperti yang tertulis di bawah barcode (contoh: ZSRTLSDM10S226):");
+            if (code && code.trim()) handleScanResult(code.trim(), scanActionType);
+        }
+
         async function handleScanResult(scannedCode, actionType) {
             let items = DB.get('bazaar_items');
             let targetIndex = items.findIndex(i => String(i.code || '').toLowerCase() === scannedCode.trim().toLowerCase() && (activeBazaarName ? i.bazaar_name === activeBazaarName : true) && i.status === 'active');
@@ -1551,7 +1653,7 @@
             let itemRef = getItem(id);
             if(!itemRef) return;
             
-            let res = await UI.prompt("Barang Tidak Sesuai", `Gudang menyiapkan: ${itemRef.qty_in} pcs.\nBerapa jumlah aktual yang Sales terima?`, itemRef.qty_in);
+            let res = await UI.prompt("Barang Tidak Sesuai", `Gudang menyiapkan: ${itemRef.qty_in} pcs.\nBerapa jumlah aktual yang Sales terima?`, itemRef.qty_in, true);
             if(res === null || res === "") return;
             
             let newQty = parseInt(res);
@@ -1616,7 +1718,7 @@
         async function mintaKardusDisplay(id) {
             let item = getItem(id); if(!item) return;
 
-            let res = await UI.prompt("Kardus Display", "Berapa pcs yang ingin diminta khusus untuk masuk Kardus Display?", "");
+            let res = await UI.prompt("Kardus Display", "Berapa pcs yang ingin diminta khusus untuk masuk Kardus Display?", "", true);
             if (!res) return; let reqQty = parseInt(res);
             if (isNaN(reqQty) || reqQty <= 0) return UI.alert("Error", "Jumlah tidak valid!", "error");
 
@@ -1708,7 +1810,7 @@
             let sisa = actualQty - itemRef.qty_sold;
             
             let opt = await UI.select("SO Kembali", `Sistem: ${sisa}`, ["Sesuai Sistem", "Tidak Sesuai"]); if(!opt) return;
-            let fisik = sisa; if(opt !== "Sesuai Sistem") { let f = await UI.prompt("Fisik", "Jumlah?"); if(!f) return; fisik = parseInt(f); if(isNaN(fisik) || fisik < 0) return UI.alert("Salah", "Jumlah fisik tidak valid.", "error"); }
+            let fisik = sisa; if(opt !== "Sesuai Sistem") { let f = await UI.prompt("Fisik", "Jumlah?", "", true); if(!f) return; fisik = parseInt(f); if(isNaN(fisik) || fisik < 0) return UI.alert("Salah", "Jumlah fisik tidak valid.", "error"); }
             
             showGlobalLoader();
             try {
