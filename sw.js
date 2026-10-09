@@ -1,11 +1,11 @@
 // Service Worker - Sistem Bazaar ZS & Shi (offline-first, lebih cepat)
-const CACHE_NAME = 'zs-bazaar-v3';
+const CACHE_NAME = 'zs-bazaar-v4';
 
 // File lokal & library eksternal yang di-cache saat install
 const LOCAL_ASSETS = ['./', './index.html', './manifest.json'];
 const CDN_ASSETS = [
     'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap',
-    'https://unpkg.com/html5-qrcode',
+    'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js',
     'https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js',
     'https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js'
 ];
