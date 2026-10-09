@@ -19,7 +19,7 @@
     <!-- FIREBASE SDK (MODULAR) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getFirestore, collection, doc, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot, enableIndexedDbPersistence, query, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit, writeBatch, increment } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyCv-wlyi4DXxhA-z5mI52-8DeLxpwLaNj8",
@@ -31,14 +31,16 @@
         };
 
         const app = initializeApp(firebaseConfig);
-        const db = getFirestore(app);
+        // Cache offline modern: aman dibuka di banyak tab sekaligus
+        let db;
+        try {
+            db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
+        } catch (err) {
+            console.warn("Offline persistence fallback:", err && err.code);
+            db = getFirestore(app);
+        }
 
-        enableIndexedDbPersistence(db).catch((err) => {
-            console.warn("Offline mode persistence warning:", err.code);
-        });
-
-        // PERBAIKAN: Menambahkan window.onSnapshot yang sebelumnya terlewat
-        window.db = db; window.doc = doc; window.setDoc = setDoc; window.addDoc = addDoc; window.updateDoc = updateDoc; window.deleteDoc = deleteDoc; window.collection = collection; window.query = query; window.orderBy = orderBy; window.limit = limit; window.onSnapshot = onSnapshot;
+        window.db = db; window.doc = doc; window.setDoc = setDoc; window.addDoc = addDoc; window.updateDoc = updateDoc; window.deleteDoc = deleteDoc; window.collection = collection; window.query = query; window.orderBy = orderBy; window.limit = limit; window.onSnapshot = onSnapshot; window.writeBatch = writeBatch; window.increment = increment;
         window.dispatchEvent(new Event('firebase-ready'));
     </script>
 
@@ -406,6 +408,7 @@
                 <div class="card tab-content" id="tab-master">
                     <h3>👑 Master Data Inventory</h3>
                     <div id="masterInventoryStatus" style="margin-bottom: 15px; font-weight: 600; padding: 10px; background: #e0f2fe; color: #0369a1; border-radius: 6px; display: inline-block;"></div>
+                    <button id="btnExportMaster" class="btn-success" style="width:auto; padding:8px 14px; font-size:0.8rem; margin: 0 0 15px 10px; vertical-align:top;" onclick="exportMasterInventory()">⬇️ Download Master Inventory (Excel)</button>
                     
                     <div class="grid-2" style="margin-bottom: 20px;">
                         <!-- FORM TAMBAH MANUAL -->
@@ -633,12 +636,8 @@
 
         function changePage(delta) {
             if(currentActiveTab) {
-                showGlobalLoader();
-                setTimeout(() => {
-                    currentPage[currentActiveTab] += delta;
-                    renderTablesBazaar();
-                    hideGlobalLoader();
-                }, 150);
+                currentPage[currentActiveTab] += delta;
+                renderTablesBazaar();
             }
         }
 
@@ -652,19 +651,48 @@
             if(refreshTimeout) clearTimeout(refreshTimeout);
             refreshTimeout = setTimeout(() => {
                 refreshUI();
-            }, 300);
+            }, 120);
         }
 
         // DEBOUNCED KHUSUS UNTUK MENGETIK FILTER NAMA BAJU AGAR TIDAK NGE-LAG
         let renderTimeout = null;
         function debouncedRenderTables() {
-            showGlobalLoader();
             if(renderTimeout) clearTimeout(renderTimeout);
             renderTimeout = setTimeout(() => {
                 renderTablesBazaar();
-                hideGlobalLoader();
-            }, 400); 
+            }, 200); 
         }
+
+        // ---------- HELPER BARU ----------
+        const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        const nowReq = () => new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'});
+        const masterDocId = (code) => String(code).trim().replace(/\//g, '_');
+
+        // Index cepat (O(1)) agar tidak find() berulang ke seluruh array
+        let masterVer = 0, masterMap = new Map(), itemMap = new Map(), _lastMasterVer = -1;
+        const getMaster = (code) => masterMap.get(String(code || '').toLowerCase()) || null;
+        const getItem = (id) => itemMap.get(String(id)) || null;
+
+        // Penulisan massal: semua operasi dikumpulkan lalu dikirim 1x per 400 dokumen (atomic per chunk)
+        const WB = {
+            q: [],
+            update(ref, data) { this.q.push(b => b.update(ref, data)); return null; },
+            set(ref, data)    { this.q.push(b => b.set(ref, data)); return null; },
+            del(ref)          { this.q.push(b => b.delete(ref)); return null; },
+            add(colRef, data) { this.q.push(b => b.set(window.doc(colRef), data)); return null; },
+            async flush() {
+                const ops = this.q.splice(0);
+                const jobs = [];
+                for (let i = 0; i < ops.length; i += 400) {
+                    const batch = window.writeBatch(db);
+                    ops.slice(i, i + 400).forEach(fn => fn(batch));
+                    jobs.push(batch.commit());
+                }
+                // Offline: tulis ke cache lokal & sinkron otomatis nanti, jangan menggantung loader
+                if (!navigator.onLine) { jobs.forEach(j => j.catch(e => console.error(e))); return; }
+                await Promise.all(jobs);
+            }
+        };
 
         const DB = {
             get: function(colName) { return window.appState[colName] || []; },
@@ -680,23 +708,30 @@
 
         window.addEventListener('firebase-ready', () => {
             const collections = ['users', 'master_inventory', 'bazaar_items', 'bazaars_list'];
-            
+            const markLoaded = (col) => { loadedCollections.add(col); checkInitialLoad(); };
+
             collections.forEach(col => {
                 window.onSnapshot(window.collection(db, col), (snapshot) => {
-                    let fetchedItems = [];
-                    snapshot.forEach(doc => {
-                        fetchedItems.push({ _docId: doc.id, ...doc.data() });
-                    });
-                    
-                    if (col === 'users' && fetchedItems.length === 0) {
+                    const fetchedItems = new Array(snapshot.size);
+                    let n = 0;
+                    snapshot.forEach(d => { fetchedItems[n++] = { _docId: d.id, ...d.data() }; });
+
+                    // Buat admin default HANYA jika data benar-benar dari server & kosong
+                    // (sebelumnya bisa menimpa password admin asli saat cache lokal kosong/offline)
+                    if (col === 'users' && fetchedItems.length === 0 && !snapshot.metadata.fromCache) {
                         window.setDoc(window.doc(db, 'users', 'admin'), { username: 'admin', password: 'admin', departemen: 'Superadmin' });
                     }
-                    
+
                     window.appState[col] = fetchedItems;
-                    loadedCollections.add(col);
-                    checkInitialLoad();
+                    if (col === 'master_inventory') {
+                        masterVer++;
+                        masterMap = new Map(fetchedItems.map(m => [String(m.code || '').toLowerCase(), m]));
+                    } else if (col === 'bazaar_items') {
+                        itemMap = new Map(fetchedItems.map(i => [String(i.id), i]));
+                    }
+                    markLoaded(col);
                     if (isAppReady) debouncedRefreshUI(); 
-                });
+                }, (err) => { console.error('Listener error [' + col + ']:', err); markLoaded(col); });
             });
 
             // Activity Log di-limit 100 terakhir agar tidak berat
@@ -705,11 +740,14 @@
                 let fetchedLogs = [];
                 snapshot.forEach(doc => { fetchedLogs.push({ _docId: doc.id, ...doc.data() }); });
                 window.appState['activity_logs'] = fetchedLogs;
-                
-                loadedCollections.add('activity_logs');
-                checkInitialLoad();
+                markLoaded('activity_logs');
                 if (isAppReady && currentActiveTab === 'tab-log') renderLogs();
-            });
+            }, (err) => { console.error('Listener error [activity_logs]:', err); markLoaded('activity_logs'); });
+
+            // Pengaman: jangan biarkan layar loading menggantung selamanya bila jaringan bermasalah
+            setTimeout(() => {
+                if (!isAppReady) { console.warn('Loading timeout - lanjut dengan data yang tersedia'); ['users','master_inventory','bazaar_items','bazaars_list','activity_logs'].forEach(markLoaded); }
+            }, 10000);
         });
 
         function checkInitialLoad() {
@@ -737,7 +775,7 @@
 
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => { 
-                navigator.serviceWorker.register('./sw.js?v=update1').catch(e => console.log(e)); 
+                navigator.serviceWorker.register('./sw.js?v=update2').catch(e => console.log(e)); 
             });
         }
 
@@ -765,11 +803,11 @@
                 // Limit ke 50 di UI
                 let limitedLogs = logs.slice(0, 50); 
                 tbody.innerHTML = limitedLogs.map(l => `<tr>
-                    <td>${l.timestamp}</td>
-                    <td><strong>${l.username}</strong></td>
-                    <td><span class="badge ${l.role === 'Gudang' ? 'bg-gudang' : (l.role === 'Sales' ? 'bg-sales' : 'bg-admin')}">${l.role}</span></td>
-                    <td><strong>${l.action}</strong></td>
-                    <td>${l.details}</td>
+                    <td>${esc(l.timestamp)}</td>
+                    <td><strong>${esc(l.username)}</strong></td>
+                    <td><span class="badge ${l.role === 'Gudang' ? 'bg-gudang' : (l.role === 'Sales' ? 'bg-sales' : 'bg-admin')}">${esc(l.role)}</span></td>
+                    <td><strong>${esc(l.action)}</strong></td>
+                    <td>${esc(l.details)}</td>
                 </tr>`).join('');
             }
         }
@@ -795,10 +833,10 @@
                     else if(type === 'question' || type === 'select') { iconEl.innerHTML = '📋'; btnConfirm.className = 'btn-primary'; titleEl.style.color = 'var(--primary)'; }
                     else { iconEl.innerHTML = '💡'; btnConfirm.className = 'btn-primary'; titleEl.style.color = 'var(--primary)'; }
 
-                    titleEl.innerText = title; textEl.innerHTML = text.replace(/\n/g, '<br>'); btnConfirm.innerText = confirmBtnText;
+                    titleEl.innerText = title; textEl.innerHTML = esc(text).replace(/\n/g, '<br>'); btnConfirm.innerText = confirmBtnText;
 
                     if(showInput) { inputContainer.classList.remove('hidden'); inputEl.value = inputDefault || ''; }
-                    if(showSelect) { selectContainer.classList.remove('hidden'); selectEl.innerHTML = ''; selectOptions.forEach(o => selectEl.innerHTML += `<option value="${o}">${o}</option>`); }
+                    if(showSelect) { selectContainer.classList.remove('hidden'); selectEl.innerHTML = ''; selectEl.innerHTML = selectOptions.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join(''); }
                     if(type === 'question' || type === 'confirm' || type === 'select' || showInput) { btnCancel.classList.remove('hidden'); btnCancel.innerText = cancelBtnText; }
 
                     overlay.classList.add('active'); if(showInput) setTimeout(() => inputEl.focus(), 100);
@@ -822,7 +860,7 @@
                     saleContainer.classList.remove('hidden'); btnCancel.classList.remove('hidden'); saleError.classList.add('hidden');
 
                     document.getElementById('sysModalIcon').innerHTML = '💸'; btnConfirm.className = 'btn-success'; document.getElementById('sysModalTitle').style.color = 'var(--success)';
-                    document.getElementById('sysModalTitle').innerText = title; document.getElementById('sysModalText').innerHTML = text.replace(/\n/g, '<br>'); 
+                    document.getElementById('sysModalTitle').innerText = title; document.getElementById('sysModalText').innerHTML = esc(text).replace(/\n/g, '<br>'); 
                     btnConfirm.innerText = "Simpan Penjualan"; btnCancel.innerText = "Batal";
                     
                     dateSelect.innerHTML = ''; dateOptions.forEach(d => dateSelect.innerHTML += `<option value="${d}">${d}</option>`);
@@ -849,7 +887,7 @@
         function openScanner(actionType) {
             document.getElementById('scannerModal').classList.add('active');
             html5QrcodeScanner = new Html5QrcodeScanner("qr-reader", { 
-                    fps: 30, 
+                    fps: 10, 
                     qrbox: function(viewfinderWidth, viewfinderHeight) {
                         let boxWidth = Math.min(viewfinderWidth * 0.9, 350);
                         let boxHeight = Math.min(viewfinderHeight * 0.4, 120);
@@ -866,7 +904,7 @@
                 }, false);
             html5QrcodeScanner.render((decodedText) => { 
                 html5QrcodeScanner.pause(true); closeScanner(); 
-                setTimeout(() => { handleScanResult(decodedText, actionType); }, 200);
+                setTimeout(() => { handleScanResult(decodedText, actionType); }, 50);
             }, (error) => {});
         }
         function closeScanner() {
@@ -875,14 +913,12 @@
         }
         async function handleScanResult(scannedCode, actionType) {
             let items = DB.get('bazaar_items');
-            let targetIndex = items.findIndex(i => i.code.toLowerCase() === scannedCode.trim().toLowerCase() && (activeBazaarName ? i.bazaar_name === activeBazaarName : true) && i.status === 'active');
+            let targetIndex = items.findIndex(i => String(i.code || '').toLowerCase() === scannedCode.trim().toLowerCase() && (activeBazaarName ? i.bazaar_name === activeBazaarName : true) && i.status === 'active');
             if (targetIndex === -1) return UI.alert("Tidak Ditemukan", `Kode produk "${scannedCode}" tidak ditemukan pada daftar aktif bazaar ini.\n\nPastikan Sales sudah menambahkan barang ini ke daftar permintaan.`, "error");
 
             let targetItem = items[targetIndex];
             let rowId = actionType === 'kemas' ? `row_sk_${targetItem.id}` : `row_s_${targetItem.id}`;
             
-            showGlobalLoader(); 
-
             setTimeout(() => {
                 if (actionType === 'kemas') {
                     document.getElementById('filterGudangProduct').value = targetItem.product;
@@ -905,7 +941,6 @@
                 let target = document.getElementById(currentActiveTab); if(target) target.classList.add('active'); let btn = document.getElementById('btn-' + currentActiveTab); if(btn) btn.classList.add('active');
                 
                 renderTablesBazaar();
-                hideGlobalLoader();
 
                 setTimeout(() => {
                     let rowEl = document.getElementById(rowId);
@@ -921,7 +956,7 @@
                     stockOpname(targetItem.id);
                 }
 
-            }, 250);
+            }, 0);
         }
 
         // ==========================================
@@ -945,7 +980,7 @@
                     showDashboard(); 
                     document.getElementById('loginUser').value = ''; document.getElementById('loginPass').value = ''; 
                     hideGlobalLoader();
-                }, 400);
+                }, 0);
             } else { await UI.alert("Gagal", "Username/Password salah.", "error"); }
         }
         async function register() {
@@ -991,21 +1026,30 @@
                     activeBazaarName = ""; sessionStorage.removeItem('activeBazaarName'); 
                     showLogin(); 
                     hideGlobalLoader();
-                }, 400);
+                }, 0);
             } 
         }
 
         function refreshUI() {
             if(!currentUser) return;
-            populateFilters();
-            if(currentUser.departemen === 'Sales' && activeBazaarName) { populateProductDropdown(); renderTablesBazaar(); }
-            else if(currentUser.departemen === 'Gudang' && !activeBazaarName) populateGudangBazaarDropdown();
-            else if(currentUser.departemen === 'Gudang' && activeBazaarName) renderTablesBazaar();
-            else if(currentUser.departemen === 'Superadmin') { renderSystemTables(); renderTablesBazaar(); renderLogs(); }
-            
-            if(currentActiveTab === 'tab-master') renderMasterDateStatus();
-        }
+            const t = currentActiveTab, d = currentUser.departemen;
+            const tableTab = (t === 'tab-packing' || t === 'tab-stok' || t === 'tab-riwayat');
+            if (tableTab) populateFilters();
 
+            if (d === 'Sales' && activeBazaarName) {
+                if (t === 'tab-permintaan' && _lastMasterVer !== masterVer) populateProductDropdown();
+                if (tableTab) renderTablesBazaar();
+            }
+            else if (d === 'Gudang' && !activeBazaarName) populateGudangBazaarDropdown();
+            else if (d === 'Gudang' && activeBazaarName) { if (tableTab) renderTablesBazaar(); }
+            else if (d === 'Superadmin') {
+                if (t === 'tab-sistem') renderSystemTables();
+                if (tableTab) renderTablesBazaar();
+                if (t === 'tab-log') renderLogs();
+            }
+
+            if (t === 'tab-master') renderMasterDateStatus();
+        }
         function showDashboard() {
             document.getElementById('loginSection').classList.add('hidden'); document.getElementById('dashboardSection').classList.remove('hidden'); document.getElementById('navbar').classList.remove('hidden');
             document.getElementById('navUsername').innerText = currentUser.username; let badge = document.getElementById('navRole'); badge.innerText = currentUser.departemen;
@@ -1033,21 +1077,16 @@
         }
 
         function openTab(tabId) {
-            showGlobalLoader();
-            setTimeout(() => {
-                currentActiveTab = tabId; 
-                resetPage(); 
-                
-                ['tab-master', 'tab-permintaan', 'tab-packing', 'tab-stok', 'tab-riwayat', 'tab-sistem', 'tab-log'].forEach(id => { let el = document.getElementById(id); if(el) el.classList.remove('active'); });
-                document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-                let target = document.getElementById(tabId); if(target) target.classList.add('active'); let btn = document.getElementById('btn-' + tabId); if(btn) btn.classList.add('active');
-                
-                refreshUI(); 
-                hideGlobalLoader();
-            }, 150);
-        }
+            currentActiveTab = tabId; 
+            resetPage(); 
 
-        function populateSalesBazaarDropdown() { let bazaars = DB.get('bazaars_list'); let select = document.getElementById('salesBazaarSelect'); select.innerHTML = '<option value="">-- Pilih Bazaar --</option><option value="NEW" style="font-weight:bold; color:var(--primary);">+ Buka/Buat Bazaar Baru</option>'; bazaars.forEach(b => select.innerHTML += `<option value="${b.name}">${b.name} (${b.start_date} s/d ${b.end_date})</option>`); toggleNewBazaarInput(); }
+            ['tab-master', 'tab-permintaan', 'tab-packing', 'tab-stok', 'tab-riwayat', 'tab-sistem', 'tab-log'].forEach(id => { let el = document.getElementById(id); if(el) el.classList.remove('active'); });
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            let target = document.getElementById(tabId); if(target) target.classList.add('active'); let btn = document.getElementById('btn-' + tabId); if(btn) btn.classList.add('active');
+
+            refreshUI(); 
+        }
+        function populateSalesBazaarDropdown() { let bazaars = DB.get('bazaars_list'); let select = document.getElementById('salesBazaarSelect'); let html = '<option value="">-- Pilih Bazaar --</option><option value="NEW" style="font-weight:bold; color:var(--primary);">+ Buka/Buat Bazaar Baru</option>'; bazaars.forEach(b => html += `<option value="${esc(b.name)}">${esc(b.name)} (${esc(b.start_date)} s/d ${esc(b.end_date)})</option>`); select.innerHTML = html; toggleNewBazaarInput(); }
         function toggleNewBazaarInput() { let s = document.getElementById('salesBazaarSelect').value; let c = document.getElementById('newBazaarContainer'); let btnH = document.getElementById('btnHapusBazaarSales'); if(s === 'NEW') { c.classList.remove('hidden'); if(btnH) btnH.classList.add('hidden'); } else { c.classList.add('hidden'); if(s !== '' && btnH) btnH.classList.remove('hidden'); else if(btnH) btnH.classList.add('hidden'); } }
         async function setBazaarName() {
             let s = document.getElementById('salesBazaarSelect').value; let bName = "";
@@ -1055,6 +1094,7 @@
                 bName = document.getElementById('bazaarNameInput').value.trim(); let bStart = document.getElementById('bazaarStartDate').value; let bEnd = document.getElementById('bazaarEndDate').value;
                 if(!bName || !bStart || !bEnd) return UI.alert("Belum Lengkap", "Isi semua form!", "warning");
                 if(new Date(bStart) > new Date(bEnd)) return UI.alert("Salah", "Tanggal salah.", "error");
+                if(bName.includes('/')) return UI.alert("Salah", "Nama bazaar tidak boleh mengandung karakter '/'.", "error");
                 
                 try {
                     let bList = DB.get('bazaars_list');
@@ -1066,28 +1106,35 @@
             } else { bName = s; if(!bName) return UI.alert("Kosong", "Pilih Bazaar!", "warning"); }
             activeBazaarName = bName; sessionStorage.setItem('activeBazaarName', bName); showDashboard();
         }
-        function populateGudangBazaarDropdown() { let items = DB.get('bazaar_items'); let bazaarsList = DB.get('bazaars_list'); let dp = document.getElementById('gudangBazaarDropdown'); dp.innerHTML = ''; let uniqueBazaars = new Set(); items.forEach(i => { if(i.status === 'active') uniqueBazaars.add(i.bazaar_name); }); if(uniqueBazaars.size === 0) return dp.innerHTML = '<option value="">(Belum ada antrean)</option>'; Array.from(uniqueBazaars).forEach(b => { let bz = bazaarsList.find(x => x.name === b); dp.innerHTML += `<option value="${b}">${bz ? `${b} (${bz.start_date})` : b}</option>`; }); }
+        function populateGudangBazaarDropdown() { let items = DB.get('bazaar_items'); let bazaarsList = DB.get('bazaars_list'); let dp = document.getElementById('gudangBazaarDropdown'); let prev = dp.value; let uniqueBazaars = new Set(); items.forEach(i => { if(i.status === 'active') uniqueBazaars.add(i.bazaar_name); }); if(uniqueBazaars.size === 0) return dp.innerHTML = '<option value="">(Belum ada antrean)</option>'; let html = ''; Array.from(uniqueBazaars).forEach(b => { let bz = bazaarsList.find(x => x.name === b); html += `<option value="${esc(b)}">${esc(bz ? `${b} (${bz.start_date})` : b)}</option>`; }); dp.innerHTML = html; if(prev && uniqueBazaars.has(prev)) dp.value = prev; }
         async function masukBazaarGudang() { let dp = document.getElementById('gudangBazaarDropdown'); if(!dp.value) return UI.alert("Kosong", "Tidak ada antrean.", "info"); activeBazaarName = dp.value; sessionStorage.setItem('activeBazaarName', activeBazaarName); showDashboard(); }
         function gantiBazaar() { activeBazaarName = ""; sessionStorage.removeItem('activeBazaarName'); showDashboard(); }
 
         // PERMINTAAN MANUAL (SALES)
         function populateProductDropdown() {
-            let inv = DB.get('master_inventory'); let select = document.getElementById('productSelect'); select.innerHTML = '<option value="">-- Pilih Produk --</option>';
+            let inv = DB.get('master_inventory'); let select = document.getElementById('productSelect'); 
+            const prev = select.value;
             let uProd = new Set(); inv.forEach(i => uProd.add(`[${i.brand}] ${i.product}`));
-            Array.from(uProd).sort().forEach(p => select.innerHTML += `<option value="${p}">${p}</option>`);
-            document.getElementById('variantContainer').classList.add('hidden'); document.getElementById('keteranganContainer').classList.add('hidden'); document.getElementById('qtyContainer').classList.add('hidden'); document.getElementById('btnTambahManual').classList.add('hidden');
+            let html = '<option value="">-- Pilih Produk --</option>';
+            Array.from(uProd).sort().forEach(p => html += `<option value="${esc(p)}">${esc(p)}</option>`);
+            select.innerHTML = html; _lastMasterVer = masterVer;
+
+            if (prev && uProd.has(prev)) { select.value = prev; renderVariants(); }
+            else { select.value = ''; document.getElementById('variantContainer').classList.add('hidden'); document.getElementById('keteranganContainer').classList.add('hidden'); document.getElementById('qtyContainer').classList.add('hidden'); document.getElementById('btnTambahManual').classList.add('hidden'); }
         }
         function renderVariants() {
             let sp = document.getElementById('productSelect').value; let vc = document.getElementById('variantContainer'); let kc = document.getElementById('keteranganContainer'); let qc = document.getElementById('qtyContainer'); let btn = document.getElementById('btnTambahManual'); let cbx = document.getElementById('variantCheckboxes');
             if(!sp) { vc.classList.add('hidden'); kc.classList.add('hidden'); qc.classList.add('hidden'); btn.classList.add('hidden'); return; }
+            let wasChecked = new Set(Array.from(document.querySelectorAll('.var-checkbox:checked')).map(c => c.value));
             let inv = DB.get('master_inventory'); let html = '';
             inv.forEach((i, idx) => {
                 if(`[${i.brand}] ${i.product}` === sp) {
-                    let dis = i.total === 0 ? "disabled" : ""; let col = i.total === 0 ? 'var(--danger)' : 'var(--success)';
-                    html += `<div class="variant-item"><input type="checkbox" class="var-checkbox" id="var_${idx}" value="${i.code}" ${dis}><label for="var_${idx}" style="cursor:pointer; color:${col};"> ${i.variant} - Code: ${i.code} <strong>(Stok: ${i.total})</strong></label></div>`;
+                    let dis = i.total <= 0 ? "disabled" : ""; let col = i.total <= 0 ? 'var(--danger)' : 'var(--success)';
+                    let chk = (!dis && wasChecked.has(i.code)) ? "checked" : "";
+                    html += `<div class="variant-item"><input type="checkbox" class="var-checkbox" id="var_${idx}" value="${esc(i.code)}" ${dis} ${chk}><label for="var_${idx}" style="cursor:pointer; color:${col};"> ${esc(i.variant)} - Code: ${esc(i.code)} <strong>(Stok: ${i.total})</strong></label></div>`;
                 }
             });
-            cbx.innerHTML = html; document.getElementById('checkAll').checked = false; vc.classList.remove('hidden'); kc.classList.remove('hidden'); qc.classList.remove('hidden'); btn.classList.remove('hidden');
+            cbx.innerHTML = html; if(!wasChecked.size) document.getElementById('checkAll').checked = false; vc.classList.remove('hidden'); kc.classList.remove('hidden'); qc.classList.remove('hidden'); btn.classList.remove('hidden');
         }
         function toggleAllVariants() { let chk = document.getElementById('checkAll').checked; document.querySelectorAll('.var-checkbox').forEach(c => { if(!c.disabled) c.checked = chk; }); }
         
@@ -1110,8 +1157,8 @@
 
             for(let c of cbx) { 
                 let code = c.value;
-                let masterItem = invLocal.find(m => m.code === code);
-                if(qty > masterItem.total) return UI.alert("Stok Kurang", `Maksimal ${masterItem.total} pcs untuk ${code}.`, "error"); 
+                let masterItem = getMaster(code);
+                if(!masterItem) return UI.alert("Error", `Kode ${code} tidak ada di master.`, "error"); if(qty > masterItem.total) return UI.alert("Stok Kurang", `Maksimal ${masterItem.total} pcs untuk ${code}.`, "error"); 
                 codesToUpdate.push({ code: code, ref: masterItem });
             }
             
@@ -1119,7 +1166,7 @@
             try {
                 let promises = [];
                 codesToUpdate.forEach(d => {
-                    promises.push(window.updateDoc(window.doc(db, 'master_inventory', d.ref._docId), { total: d.ref.total - qty }));
+                    promises.push(WB.update(window.doc(db, 'master_inventory', d.ref._docId), { total: window.increment(-qty) }));
                     
                     let existing = DB.get('bazaar_items').find(i => i.code === d.code && i.bazaar_name === activeBazaarName && i.status === 'active');
                     if (existing) {
@@ -1137,14 +1184,14 @@
                             updatedData.display_req_qty = (existing.display_req_qty || 0) + parsedDisplayQty;
                             updatedData.display_req_type = 'tambahan';
                         }
-                        promises.push(window.updateDoc(window.doc(db, 'bazaar_items', existing._docId), updatedData));
+                        promises.push(WB.update(window.doc(db, 'bazaar_items', existing._docId), updatedData));
                     } else {
-                        promises.push(window.addDoc(window.collection(db, 'bazaar_items'), {
+                        promises.push(WB.add(window.collection(db, 'bazaar_items'), {
                             id: Date.now() + Math.random(), bazaar_name: activeBazaarName, brand: d.ref.brand, product: d.ref.product, variant: d.ref.variant, code: d.code, collection: d.ref.collection || "-", original_qty: qty, qty_in: qty, qty_sold: 0, status: 'active', fisik_kembali: 0, status_pengiriman: 'Menunggu Gudang', keterangan_gudang: '-', req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}), keterangan_sales: ketSales || "-", display_req_qty: isDisplay ? parsedDisplayQty : 0, display_req_type: isDisplay ? 'tambahan' : null 
                         }));
                     }
                 });
-                await Promise.all(promises);
+                await WB.flush();
                 
                 logActivity('Request Barang', `Meminta manual sebanyak ${qty} pcs untuk bazaar ${activeBazaarName}`);
                 hideGlobalLoader();
@@ -1154,7 +1201,7 @@
         }
 
         // CSV SALES PARSE
-        function parseCSV(str) { let delimiter = str.includes(';') ? ';' : ','; let arr = []; let quote = false; for (let row = 0, col = 0, c = 0; c < str.length; c++) { let cc = str[c], nc = str[c+1]; arr[row] = arr[row] || []; arr[row][col] = arr[row][col] || ''; if (cc === '"' && quote && nc === '"') { arr[row][col] += cc; ++c; continue; } if (cc === '"') { quote = !quote; continue; } if (cc === delimiter && !quote) { ++col; continue; } if (cc === '\r' && nc === '\n' && !quote) { ++row; col = 0; ++c; continue; } if (cc === '\n' && !quote) { ++row; col = 0; continue; } if (cc === '\r' && !quote) { ++row; col = 0; continue; } arr[row][col] += cc; } return arr; }
+        function parseCSV(str) { let firstLine = str.split(/\r?\n/, 1)[0] || ''; let delimiter = (firstLine.split(';').length > firstLine.split(',').length) ? ';' : ','; let arr = []; let quote = false; for (let row = 0, col = 0, c = 0; c < str.length; c++) { let cc = str[c], nc = str[c+1]; arr[row] = arr[row] || []; arr[row][col] = arr[row][col] || ''; if (cc === '"' && quote && nc === '"') { arr[row][col] += cc; ++c; continue; } if (cc === '"') { quote = !quote; continue; } if (cc === delimiter && !quote) { ++col; continue; } if (cc === '\r' && nc === '\n' && !quote) { ++row; col = 0; ++c; continue; } if (cc === '\n' && !quote) { ++row; col = 0; continue; } if (cc === '\r' && !quote) { ++row; col = 0; continue; } arr[row][col] += cc; } return arr; }
         function downloadTemplateBawaan() { let csv = "Brand,Product,Variant,Code,Collection,Qty_Dibawa,Keterangan_Sales\nZaskia Sungkar,Gamis Flowy,Hitam,ZS-001,Lebaran 2026,2,1 display\nShi By Shireen,Blouse Serut,Putih,SHI-002,Lebaran 2026,5,"; let link = document.createElement("a"); link.setAttribute("href", encodeURI("data:text/csv;charset=utf-8," + csv)); link.setAttribute("download", "Template_Rencana_Sales.csv"); document.body.appendChild(link); link.click(); document.body.removeChild(link); }
         function downloadTemplateMaster() { let csv = "Brand,Product,Variant,Code,Collection,BTK,GU,GREC,GTOK,GWEB\nZaskia Sungkar,Gamis Flowy,Hitam,ZS-001,Lebaran 2026,10,5,5,10,20"; let link = document.createElement("a"); link.setAttribute("href", encodeURI("data:text/csv;charset=utf-8," + csv)); link.setAttribute("download", "Template_Master_Inventory.csv"); document.body.appendChild(link); link.click(); document.body.removeChild(link); }
         
@@ -1176,8 +1223,8 @@
                 }
                 pendingUploadData = [];
                 for(let k in csvDataMap) { 
-                    let item = csvDataMap[k]; let invIdx = inv.findIndex(i => i.code.toLowerCase() === k); 
-                    if(invIdx !== -1) pendingUploadData.push({ invIdx: invIdx, brand: item.brand, product: item.product, variant: item.variant, code: item.originalCode, collection: item.collection, qty: item.qty, ketSales: item.ketSales, maxStock: inv[invIdx].total, isValid: item.qty <= inv[invIdx].total, _mDocId: inv[invIdx]._docId }); 
+                    let item = csvDataMap[k]; let invIdx = inv.findIndex(i => String(i.code || '').toLowerCase() === k); 
+                    if(invIdx !== -1) pendingUploadData.push({ invIdx: invIdx, brand: item.brand, product: item.product, variant: item.variant, code: inv[invIdx].code, collection: item.collection, qty: item.qty, ketSales: item.ketSales, maxStock: inv[invIdx].total, isValid: item.qty <= inv[invIdx].total, _mDocId: inv[invIdx]._docId }); 
                     else errorMsgs.push(`Code "${item.originalCode}" tidak ditemukan.`); 
                 }
                 if(pendingUploadData.length === 0) return UI.alert("Gagal", "Tidak ada data valid.", "error"); 
@@ -1210,7 +1257,7 @@
                 let bItems = DB.get('bazaar_items');
 
                 pendingUploadData.forEach(d => {
-                    promises.push(window.updateDoc(window.doc(db, 'master_inventory', d._mDocId), { total: d.maxStock - d.qty }));
+                    promises.push(WB.update(window.doc(db, 'master_inventory', d._mDocId), { total: window.increment(-d.qty) }));
                     
                     let existing = bItems.find(i => i.code === d.code && i.bazaar_name === activeBazaarName && i.status === 'active');
                     let finalKet = d.ketSales || "-";
@@ -1236,14 +1283,14 @@
                             updatedData.display_req_qty = (existing.display_req_qty || 0) + parsedDisplayQty;
                             updatedData.display_req_type = 'tambahan';
                         }
-                        promises.push(window.updateDoc(window.doc(db, 'bazaar_items', existing._docId), updatedData));
+                        promises.push(WB.update(window.doc(db, 'bazaar_items', existing._docId), updatedData));
                     } else { 
-                        promises.push(window.addDoc(window.collection(db, 'bazaar_items'), {
+                        promises.push(WB.add(window.collection(db, 'bazaar_items'), {
                             id: Date.now() + Math.random(), bazaar_name: activeBazaarName, brand: d.brand, product: d.product, variant: d.variant, code: d.code, collection: d.collection, original_qty: d.qty, qty_in: d.qty, qty_sold: 0, status: 'active', fisik_kembali: 0, status_pengiriman: 'Menunggu Gudang', keterangan_gudang: '-', req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}), keterangan_sales: finalKet, display_req_qty: isDisplay ? parsedDisplayQty : 0, display_req_type: isDisplay ? 'tambahan' : null 
                         }));
                     }
                 });
-                await Promise.all(promises);
+                await WB.flush();
 
                 logActivity('Upload Permintaan', `Mengupload data permintaan via CSV untuk bazaar ${activeBazaarName}`);
                 hideGlobalLoader();
@@ -1410,8 +1457,8 @@
                 }));
 
                 if (diffStore !== 0) {
-                    let mItem = invItems.find(m => m.code === item.code);
-                    if(mItem) promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: mItem.total + diffStore }));
+                    let mItem = getMaster(item.code);
+                    if(mItem) promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(diffStore) }));
                 }
 
                 await Promise.all(promises);
@@ -1433,7 +1480,7 @@
                     if(btnCell) btnCell.innerHTML = `<span style="display:block; padding:8px; background:#d1fae5; color:#047857; border-radius:6px; font-weight:bold; font-size:0.8rem; text-align:center;">✅ Selesai</span>`;
                 }
 
-                let item = DB.get('bazaar_items').find(i => String(i.id) === String(id));
+                let item = getItem(id);
                 if(item) {
                     try {
                         await window.updateDoc(window.doc(db, 'bazaar_items', item._docId), { status_pengiriman: 'Diterima Sales', qty_revisi_sales: item.qty_in });
@@ -1444,7 +1491,7 @@
         }
 
         async function terimaBarangTidakSesuai(id) {
-            let itemRef = DB.get('bazaar_items').find(i => String(i.id) === String(id));
+            let itemRef = getItem(id);
             if(!itemRef) return;
             
             let res = await UI.prompt("Barang Tidak Sesuai", `Gudang menyiapkan: ${itemRef.qty_in} pcs.\nBerapa jumlah aktual yang Sales terima?`, itemRef.qty_in);
@@ -1472,8 +1519,8 @@
                 }));
 
                 if (diffStore !== 0) {
-                    let mItem = DB.get('master_inventory').find(m => m.code === itemRef.code);
-                    if(mItem) promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: mItem.total + diffStore }));
+                    let mItem = getMaster(itemRef.code);
+                    if(mItem) promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(diffStore) }));
                 }
 
                 await Promise.all(promises);
@@ -1482,14 +1529,14 @@
         }
 
         async function catatPenjualan(id) {
-            let itemRef = DB.get('bazaar_items').find(i => String(i.id) === String(id));
+            let itemRef = getItem(id); if(!itemRef) return;
             let st = itemRef.status_pengiriman || "Menunggu Gudang";
             if(st === "Menunggu Gudang" || st === "Menunggu Refill Gudang" || st === "Tidak Dikemas" || st === "Dikemas") return UI.alert("Terkunci", "Belum diverifikasi terima.", "warning");
             
             let actualQty = itemRef.qty_revisi_sales !== undefined ? itemRef.qty_revisi_sales : itemRef.qty_in;
             let sisa = actualQty - itemRef.qty_sold; 
             
-            if(sisa === 0) return UI.alert("Habis", "Stok 0", "info");
+            if(sisa <= 0) return UI.alert("Habis", "Stok 0", "info");
             
             let bz = DB.get('bazaars_list').find(b => b.name === itemRef.bazaar_name); let dOpt = [];
             if(bz && bz.start_date && bz.end_date) { let curr = new Date(bz.start_date+"T12:00:00Z"); let end = new Date(bz.end_date+"T12:00:00Z"); while(curr <= end) { dOpt.push(curr.toISOString().split('T')[0]); curr.setDate(curr.getDate()+1); } }
@@ -1498,10 +1545,10 @@
             let res = await UI.salePrompt(`Jual`, `Sisa: ${sisa}`, dOpt, sisa); if(!res) return;
             
             try {
-                let sHist = itemRef.sales_history || [];
+                let sHist = [...(itemRef.sales_history || [])];
                 sHist.push({ date: res.date, qty: res.qty });
                 await window.updateDoc(window.doc(db, 'bazaar_items', itemRef._docId), {
-                    qty_sold: itemRef.qty_sold + res.qty,
+                    qty_sold: window.increment(res.qty),
                     sales_history: sHist
                 });
                 logActivity('Jual Barang', `Penjualan kode: ${itemRef.code} sebanyak ${res.qty} pcs`);
@@ -1510,7 +1557,7 @@
 
         // --- FITUR KARDUS DISPLAY (TAMBAH & BATAL/EDIT) ---
         async function mintaKardusDisplay(id) {
-            let item = DB.get('bazaar_items').find(i => String(i.id) === String(id)); if(!item) return;
+            let item = getItem(id); if(!item) return;
 
             let res = await UI.prompt("Kardus Display", "Berapa pcs yang ingin diminta khusus untuk masuk Kardus Display?", "");
             if (!res) return; let reqQty = parseInt(res);
@@ -1522,8 +1569,8 @@
             if (isTambahan) {
                 try {
                     let promises = [];
-                    let mItem = DB.get('master_inventory').find(m => m.code === item.code);
-                    if(mItem) promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: mItem.total - reqQty }));
+                    let mItem = getMaster(item.code);
+                    if(mItem) promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(-reqQty) }));
 
                     let prevNote = (item.keterangan_sales && item.keterangan_sales !== "-") ? item.keterangan_sales + " | " : "";
                     promises.push(window.updateDoc(window.doc(db, 'bazaar_items', item._docId), {
@@ -1560,7 +1607,7 @@
         }
 
         async function batalKardusDisplay(id) {
-            let item = DB.get('bazaar_items').find(i => String(i.id) === String(id)); if(!item) return;
+            let item = getItem(id); if(!item) return;
 
             let conf = await UI.confirm("Batal / Edit Display", "Yakin ingin membatalkan permintaan Display ini?\n\n(Catatan: Jika ingin mengedit jumlah, batalkan permintaan ini terlebih dahulu lalu buat ulang permintaannya.)", "warning", "Ya, Batalkan", "Tutup");
             if(!conf) return;
@@ -1574,8 +1621,8 @@
                 if(newKet === '' || newKet === '|') newKet = '-';
 
                 if (item.display_req_type === 'tambahan') {
-                    let mItem = DB.get('master_inventory').find(m => m.code === item.code);
-                    if(mItem) promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: mItem.total + item.display_req_qty }));
+                    let mItem = getMaster(item.code);
+                    if(mItem) promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(item.display_req_qty) }));
                     
                     promises.push(window.updateDoc(window.doc(db, 'bazaar_items', item._docId), {
                         original_qty: item.original_qty - item.display_req_qty,
@@ -1599,12 +1646,12 @@
         }
 
         async function stockOpname(id) {
-            let itemRef = DB.get('bazaar_items').find(i => String(i.id) === String(id)); 
+            let itemRef = getItem(id); if(!itemRef) return; 
             let actualQty = itemRef.qty_revisi_sales !== undefined ? itemRef.qty_revisi_sales : itemRef.qty_in;
             let sisa = actualQty - itemRef.qty_sold;
             
             let opt = await UI.select("SO Kembali", `Sistem: ${sisa}`, ["Sesuai Sistem", "Tidak Sesuai"]); if(!opt) return;
-            let fisik = sisa; if(opt !== "Sesuai Sistem") { let f = await UI.prompt("Fisik", "Jumlah?"); if(!f) return; fisik = parseInt(f); if(isNaN(fisik)) return; }
+            let fisik = sisa; if(opt !== "Sesuai Sistem") { let f = await UI.prompt("Fisik", "Jumlah?"); if(!f) return; fisik = parseInt(f); if(isNaN(fisik) || fisik < 0) return UI.alert("Salah", "Jumlah fisik tidak valid.", "error"); }
             
             showGlobalLoader();
             try {
@@ -1618,33 +1665,33 @@
         async function hapusBazaarData(bName) {
             let itemsToRemove = DB.get('bazaar_items').filter(i => i.bazaar_name === bName && i.status === 'active');
             let promises = [];
-            promises.push(window.deleteDoc(window.doc(db, 'bazaars_list', bName)));
+            promises.push(WB.del(window.doc(db, 'bazaars_list', bName)));
             
             itemsToRemove.forEach(item => { 
-                promises.push(window.deleteDoc(window.doc(db, 'bazaar_items', item._docId)));
-                let mItem = DB.get('master_inventory').find(m => m.code === item.code); 
+                promises.push(WB.del(window.doc(db, 'bazaar_items', item._docId)));
+                let mItem = getMaster(item.code); 
                 if(mItem) {
                     let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
-                    promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: mItem.total + (actualQty - item.qty_sold) }));
+                    promises.push(WB.update(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(actualQty - item.qty_sold) }));
                 }
             });
-            await Promise.all(promises);
+            await WB.flush();
         }
         async function hapusBazaarSales() { let sel = document.getElementById('salesBazaarSelect').value; if(!sel || sel === 'NEW') return; let conf = await UI.confirm("Hapus?", "Yakin hapus bazaar?", "error"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus Bazaar', `Sales menghapus bazaar: ${sel}`); await hapusBazaarData(sel); populateSalesBazaarDropdown(); hideGlobalLoader(); UI.alert("Sukses", "Bazaar dihapus", "success"); }, 100); } }
         async function hapusBazaarAdmin(bName) { let conf = await UI.confirm("Hapus?", `Yakin hapus ${bName}?`, "error"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus Bazaar', `Superadmin menghapus bazaar: ${bName}`); await hapusBazaarData(bName); hideGlobalLoader(); UI.alert("Sukses", "Terhapus", "success"); }, 100); } }
         
         async function hapusBarang(id) { 
-            let itemRef = DB.get('bazaar_items').find(i => String(i.id) === String(id)); if(!itemRef) return; 
+            let itemRef = getItem(id); if(!itemRef) return; 
             let conf = await UI.confirm("Hapus?", `Kembalikan ${itemRef.code} ke gudang?`, "warning"); if(!conf) return; 
             
             showGlobalLoader();
             try {
                 let promises = [];
                 promises.push(window.deleteDoc(window.doc(db, 'bazaar_items', itemRef._docId)));
-                let mItem = DB.get('master_inventory').find(m => m.code === itemRef.code); 
+                let mItem = getMaster(itemRef.code); 
                 if(mItem) {
                     let actualQty = itemRef.qty_revisi_sales !== undefined ? itemRef.qty_revisi_sales : itemRef.qty_in;
-                    promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: mItem.total + (actualQty - itemRef.qty_sold) }));
+                    promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(actualQty - itemRef.qty_sold) }));
                 }
                 await Promise.all(promises);
                 logActivity('Hapus Barang', `Menghapus permintaan barang kode: ${itemRef.code}`);
@@ -1661,14 +1708,14 @@
             try {
                 let promises = [];
                 itemsToRemove.forEach(item => { 
-                    promises.push(window.deleteDoc(window.doc(db, 'bazaar_items', item._docId)));
-                    let mItem = DB.get('master_inventory').find(m => m.code === item.code); 
+                    promises.push(WB.del(window.doc(db, 'bazaar_items', item._docId)));
+                    let mItem = getMaster(item.code); 
                     if(mItem) {
                         let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
-                        promises.push(window.updateDoc(window.doc(db, 'master_inventory', mItem._docId), { total: mItem.total + (actualQty - item.qty_sold) }));
+                        promises.push(WB.update(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(actualQty - item.qty_sold) }));
                     }
                 });
-                await Promise.all(promises);
+                await WB.flush();
                 logActivity('Hapus Semua Barang', `Menghapus semua stok berjalan dari bazaar aktif`);
                 hideGlobalLoader();
                 UI.alert("Sukses", "Semua terhapus", "success"); 
@@ -1679,7 +1726,7 @@
             let conf = await UI.confirm("Hapus?", "", "warning"); 
             if(conf) { 
                 showGlobalLoader(); 
-                let item = DB.get('bazaar_items').find(i => String(i.id) === String(id));
+                let item = getItem(id);
                 if(item) await window.deleteDoc(window.doc(db, 'bazaar_items', item._docId));
                 logActivity('Hapus Riwayat', `Menghapus satu riwayat opname`); 
                 hideGlobalLoader(); 
@@ -1690,8 +1737,8 @@
             if(conf) { 
                 showGlobalLoader(); 
                 let toDelete = DB.get('bazaar_items').filter(i => i.status === 'done');
-                let promises = toDelete.map(item => window.deleteDoc(window.doc(db, 'bazaar_items', item._docId)));
-                await Promise.all(promises);
+                let promises = toDelete.map(item => WB.del(window.doc(db, 'bazaar_items', item._docId)));
+                await WB.flush();
                 logActivity('Hapus Semua Riwayat', `Mengosongkan semua riwayat opname`); 
                 hideGlobalLoader(); 
             } 
@@ -1775,12 +1822,12 @@
             paginatedItems.forEach(item => {
                 let actualQty = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
                 let sisaSistem = actualQty - item.qty_sold; 
-                let b = item.brand||"-", p = item.product||"-", v = item.variant||"-", c = item.code||"-", k = item.kardus||"-";
-                let st = item.status_pengiriman || 'Menunggu Gudang', kg = item.keterangan_gudang || '-'; 
+                let b = esc(item.brand||"-"), p = esc(item.product||"-"), v = esc(item.variant||"-"), c = esc(item.code||"-"), k = esc(item.kardus||"-");
+                let st = item.status_pengiriman || 'Menunggu Gudang', kg = esc(item.keterangan_gudang || '-'); 
                 let orig = item.original_qty || item.qty_in; let changed = orig !== item.qty_in; let tClass = changed ? 'highlight-change' : '';
                 
-                let kdText = item.kardus && item.kardus !== "-" ? `<br><span style="color:var(--info); font-size:0.75rem;">📦 Kardus: ${item.kardus}</span>` : '';
-                let ketSalesTxt = item.keterangan_sales && item.keterangan_sales !== "-" ? `<br><span style="color:var(--primary); font-size:0.75rem; font-weight:normal;">Ket: ${item.keterangan_sales}</span>` : '';
+                let kdText = item.kardus && item.kardus !== "-" ? `<br><span style="color:var(--info); font-size:0.75rem;">📦 Kardus: ${esc(item.kardus)}</span>` : '';
+                let ketSalesTxt = item.keterangan_sales && item.keterangan_sales !== "-" ? `<br><span style="color:var(--primary); font-size:0.75rem; font-weight:normal;">Ket: ${esc(item.keterangan_sales)}</span>` : '';
 
                 if(item.status === 'active') {
                     if (isPackingTab) {
@@ -1793,7 +1840,7 @@
                     }
                     if (isStokTab) {
                         if(currentUser.departemen === 'Gudang') {
-                            hS += `<tr class="${tClass}" id="row_s_${item.id}"><td>${item.bazaar_name}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${sisaSistem}</td><td><button class="btn-warning" onclick="stockOpname('${item.id}')">Opname SO</button></td></tr>`;
+                            hS += `<tr class="${tClass}" id="row_s_${item.id}"><td>${esc(item.bazaar_name)}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${sisaSistem}</td><td><button class="btn-warning" onclick="stockOpname('${item.id}')">Opname SO</button></td></tr>`;
                         } else {
                             let bT = '';
                             if (st === 'Dikemas') {
@@ -1819,12 +1866,12 @@
                                 qtyDisplay += `<div style="font-size:0.85rem; font-weight:bold; color:var(--warning); margin-top:4px;">Diterima: ${item.qty_revisi_sales}</div>`;
                             }
 
-                            hS += `<tr class="${tClass}" id="row_s_${item.id}"><td>${item.bazaar_name}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${qtyDisplay}</td><td align="center">${item.qty_sold}</td><td align="center"><strong>${sisaSistem}</strong></td><td>${st}${kdText}</td><td><div style="display:flex;flex-direction:column;gap:4px;">${bT}${bJ}${bD}${bO}<button class="btn-danger" style="width:100%;" onclick="hapusBarang('${item.id}')">Hapus</button></div></td></tr>`;
+                            hS += `<tr class="${tClass}" id="row_s_${item.id}"><td>${esc(item.bazaar_name)}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${qtyDisplay}</td><td align="center">${item.qty_sold}</td><td align="center"><strong>${sisaSistem}</strong></td><td>${st}${kdText}</td><td><div style="display:flex;flex-direction:column;gap:4px;">${bT}${bJ}${bD}${bO}<button class="btn-danger" style="width:100%;" onclick="hapusBarang('${item.id}')">Hapus</button></div></td></tr>`;
                         }
                     }
                 } else if (isRiwayatTab) {
                     let sel = item.fisik_kembali - sisaSistem;
-                    hO += `<tr><td>${item.bazaar_name}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${sisaSistem}</td><td align="center">${item.fisik_kembali}</td><td align="center">${sel===0?"✔️":sel}</td>${currentUser.departemen === 'Superadmin' ? `<td><button class="btn-danger" onclick="hapusRiwayat('${item.id}')">Hapus</button></td>` : ''}</tr>`;
+                    hO += `<tr><td>${esc(item.bazaar_name)}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${sisaSistem}</td><td align="center">${item.fisik_kembali}</td><td align="center">${sel===0?"✔️":sel}</td>${currentUser.departemen === 'Superadmin' ? `<td><button class="btn-danger" onclick="hapusRiwayat('${item.id}')">Hapus</button></td>` : ''}</tr>`;
                 }
             });
 
@@ -1896,14 +1943,18 @@
             inv.forEach(i => { if(i.brand) bSet.add(i.brand); if(i.product) pSet.add(i.product); });
             
             let bHtml = '<option value="">-- Semua Brand --</option>';
-            Array.from(bSet).sort().forEach(b => bHtml += `<option value="${b}">${b}</option>`);
+            Array.from(bSet).sort().forEach(b => bHtml += `<option value="${esc(b)}">${esc(b)}</option>`);
             
             let pHtml = '';
-            Array.from(pSet).sort().forEach(p => pHtml += `<option value="${p}">`);
+            Array.from(pSet).sort().forEach(p => pHtml += `<option value="${esc(p)}">`);
 
             let kHtml = '<option value="">-- Semua Kardus --</option>';
-            Array.from(kSet).sort().forEach(k => kHtml += `<option value="${k}">${k}</option>`);
+            Array.from(kSet).sort().forEach(k => kHtml += `<option value="${esc(k)}">${esc(k)}</option>`);
             
+            const sig = bHtml + '||' + kHtml + '||' + pHtml;
+            if (sig === window._filterSig) return;
+            window._filterSig = sig;
+
             let selFBG = document.getElementById('filterGudangBrand')?.value || "";
             let selFKG = document.getElementById('filterGudangKardus')?.value || "";
             let selFGS = document.getElementById('filterGudangStatus')?.value || "";
@@ -1927,9 +1978,9 @@
         // MASTER INVENTORY & SISTEM
         function renderSystemTables() {
             let users = DB.get('users'); let tbodyU = document.getElementById('tableBodyUsers');
-            if(tbodyU) tbodyU.innerHTML = users.map((u,i) => `<tr><td>${u.username}</td><td>${u.departemen}</td><td>${u.username === currentUser.username ? '' : `<button class="btn-danger" onclick="hapusUser('${u.username}')">Hapus</button>`}</td></tr>`).join('');
+            if(tbodyU) tbodyU.innerHTML = users.map((u,i) => `<tr><td>${esc(u.username)}</td><td>${esc(u.departemen)}</td><td>${u.username === currentUser.username ? '' : `<button class="btn-danger" data-u="${esc(u.username)}" onclick="hapusUser(this.dataset.u)">Hapus</button>`}</td></tr>`).join('');
             let bazaars = DB.get('bazaars_list'); let tbodyB = document.getElementById('tableBodyBazaarsAdmin');
-            if(tbodyB) tbodyB.innerHTML = bazaars.map(b => `<tr><td>${b.name}</td><td>${b.start_date}</td><td><button class="btn-danger" onclick="hapusBazaarAdmin('${b.name}')">Hapus</button></td></tr>`).join('');
+            if(tbodyB) tbodyB.innerHTML = bazaars.map(b => `<tr><td>${esc(b.name)}</td><td>${esc(b.start_date)}</td><td><button class="btn-danger" data-b="${esc(b.name)}" onclick="hapusBazaarAdmin(this.dataset.b)">Hapus</button></td></tr>`).join('');
         }
         async function hapusUser(username) { let conf = await UI.confirm("Hapus?", `Hapus ${username}?`, "warning"); if(conf) { showGlobalLoader(); setTimeout(async () => { logActivity('Hapus User', `Menghapus user: ${username}`); await window.deleteDoc(window.doc(db, 'users', username.toLowerCase())); hideGlobalLoader(); UI.alert("Sukses", "User dihapus.", "success"); }, 100); } }
         
@@ -1951,7 +2002,7 @@
             let total = btk + gu + grec + gtok + gweb;
             let newData = { brand, product, variant, code, collection, btk, gu, grec, gtok, gweb, total };
             
-            let existingItem = DB.get('master_inventory').find(item => item.code.toLowerCase() === code.toLowerCase());
+            let existingItem = getMaster(code);
             if (existingItem) {
                 let confOverride = await UI.confirm("Update Data", `Kode barang ${code} sudah ada di master. Yakin ingin menimpa (update) datanya menjadi yang baru?`, "warning");
                 if (!confOverride) return;
@@ -1959,7 +2010,7 @@
 
             showGlobalLoader();
             try {
-                await window.setDoc(window.doc(db, 'master_inventory', code), newData);
+                await window.setDoc(window.doc(db, 'master_inventory', (getMaster(code)?._docId || masterDocId(code))), newData);
                 logActivity('Tambah Master Manual', `Menambah/Update manual produk kode: ${code}`);
                 localStorage.setItem('master_inventory_date', new Date().toLocaleString());
                 hideGlobalLoader();
@@ -1989,14 +2040,14 @@
                             let code = (c[3]||'').trim();
                             if(!code) continue;
 
-                            let btk = parseInt(c[5])||0, gu = parseInt(c[6])||0, grec = parseInt(c[7])||0, gtok = parseInt(c[8])||0, gweb = parseInt(c[9])||0;
+                            let btk = Math.max(0, parseInt(c[5])||0), gu = Math.max(0, parseInt(c[6])||0), grec = Math.max(0, parseInt(c[7])||0), gtok = Math.max(0, parseInt(c[8])||0), gweb = Math.max(0, parseInt(c[9])||0);
                             let total = btk + gu + grec + gtok + gweb;
                             
                             let newData = { brand: (c[0]||'').trim(), product: (c[1]||'').trim(), variant: (c[2]||'').trim(), code: code, collection: (c[4]||'').trim(), btk: btk, gu: gu, grec: grec, gtok: gtok, gweb: gweb, total: total };
-                            promises.push(window.setDoc(window.doc(db, 'master_inventory', code), newData));
+                            promises.push(WB.set(window.doc(db, 'master_inventory', (getMaster(code)?._docId || masterDocId(code))), newData));
                         }
                     }
-                    await Promise.all(promises);
+                    await WB.flush();
                     logActivity('Upload CSV Master', `Mengupload data CSV Master Inventory`);
                     localStorage.setItem('master_inventory_date', new Date().toLocaleString()); 
                     hideGlobalLoader();
@@ -2012,8 +2063,8 @@
             if(conf) { 
                 showGlobalLoader(); 
                 let inv = DB.get('master_inventory');
-                let promises = inv.map(i => window.deleteDoc(window.doc(db, 'master_inventory', i._docId)));
-                await Promise.all(promises);
+                let promises = inv.map(i => WB.del(window.doc(db, 'master_inventory', i._docId)));
+                await WB.flush();
                 logActivity('Kosongkan Master', `Menghapus seluruh Master Inventory Data`); 
                 hideGlobalLoader(); 
                 UI.alert("Sukses", "Semua data master berhasil dihapus.", "success");
@@ -2022,16 +2073,109 @@
 
         function renderMasterDateStatus() {
             let inv = DB.get('master_inventory'); let date = localStorage.getItem('master_inventory_date'); let statEl = document.getElementById('masterInventoryStatus'); let tbody = document.getElementById('tableBodyMasterPreview');
-            if(statEl) statEl.innerHTML = inv.length > 0 ? `✅ <strong>${inv.length}</strong> data (${date})` : `❌ Belum ada Master Data`;
+            if(statEl) {
+                let totalGudang = 0; inv.forEach(d => totalGudang += (Number(d.total) || 0));
+                statEl.innerHTML = inv.length > 0 ? `✅ <strong>${inv.length}</strong> data${date ? ' (' + esc(date) + ')' : ''} &nbsp;•&nbsp; 📦 Total stok di gudang: <strong>${totalGudang.toLocaleString('id-ID')} pcs</strong>` : `❌ Belum ada Master Data`;
+            }
             if(tbody) {
                 let limitedInv = inv.slice(0, 50);
-                tbody.innerHTML = limitedInv.map(d => `<tr><td>${d.brand}</td><td>${d.product}</td><td>${d.variant}</td><td><code>${d.code}</code></td><td>${d.collection}</td><td>${d.btk}</td><td>${d.gu}</td><td>${d.grec}</td><td>${d.gtok}</td><td>${d.gweb}</td><td>${d.total}</td></tr>`).join('');
+                tbody.innerHTML = limitedInv.map(d => `<tr><td>${esc(d.brand)}</td><td>${esc(d.product)}</td><td>${esc(d.variant)}</td><td><code>${esc(d.code)}</code></td><td>${esc(d.collection)}</td><td>${d.btk}</td><td>${d.gu}</td><td>${d.grec}</td><td>${d.gtok}</td><td>${d.gweb}</td><td>${d.total}</td></tr>`).join('');
                 if (inv.length > 50) {
-                    tbody.innerHTML += `<tr><td colspan="15" style="text-align:center; padding:15px; color:var(--info); background:#eff6ff;">⚠️ Menampilkan 50 dari total ${inv.length} master data.</td></tr>`;
+                    tbody.innerHTML += `<tr><td colspan="11" style="text-align:center; padding:15px; color:var(--info); background:#eff6ff;">⚠️ Menampilkan 50 dari total ${inv.length} master data. Klik "Download Master Inventory" untuk melihat semuanya.</td></tr>`;
                 }
             }
         }
 
+        // ==========================================
+        // FITUR DOWNLOAD MASTER INVENTORY (EXCEL) + TOTAL STOK GUDANG
+        // ==========================================
+        function exportMasterInventory() {
+            const inv = DB.get('master_inventory');
+            if (!inv.length) return UI.alert("Kosong", "Belum ada data Master Inventory yang diupload.", "warning");
+
+            const n = (v) => Number(v) || 0;
+            const rows = inv.slice().sort((a, b) =>
+                String(a.brand || '').localeCompare(String(b.brand || '')) ||
+                String(a.product || '').localeCompare(String(b.product || '')) ||
+                String(a.variant || '').localeCompare(String(b.variant || '')));
+
+            const T = { btk: 0, gu: 0, grec: 0, gtok: 0, gweb: 0, awal: 0, keluar: 0, sisa: 0 };
+            const perBrand = {};
+            const cell = 'padding:5px;';
+            const num = 'padding:5px; text-align:center; mso-number-format:\'#,##0\';';
+            let body = '';
+
+            rows.forEach((d, i) => {
+                const awal = n(d.btk) + n(d.gu) + n(d.grec) + n(d.gtok) + n(d.gweb);
+                const sisa = n(d.total);
+                const keluar = awal - sisa;
+                T.btk += n(d.btk); T.gu += n(d.gu); T.grec += n(d.grec); T.gtok += n(d.gtok); T.gweb += n(d.gweb);
+                T.awal += awal; T.keluar += keluar; T.sisa += sisa;
+
+                const br = d.brand || '-';
+                if (!perBrand[br]) perBrand[br] = { sku: 0, awal: 0, sisa: 0 };
+                perBrand[br].sku++; perBrand[br].awal += awal; perBrand[br].sisa += sisa;
+
+                let status = 'Tersedia', rowBg = '';
+                if (sisa <= 0) { status = 'Habis'; rowBg = 'background-color:#fee2e2;'; }
+                else if (keluar < 0) { status = 'Cek data (sisa > stok awal)'; rowBg = 'background-color:#fef9c3;'; }
+
+                body += `<tr style="${rowBg}">
+                    <td style="${num}">${i + 1}</td>
+                    <td style="${cell}">${esc(d.brand || '-')}</td>
+                    <td style="${cell}">${esc(d.product || '-')}</td>
+                    <td style="${cell}">${esc(d.variant || '-')}</td>
+                    <td style="${cell} mso-number-format:'\\@';">${esc(d.code || '-')}</td>
+                    <td style="${cell}">${esc(d.collection || '-')}</td>
+                    <td style="${num}">${n(d.btk)}</td><td style="${num}">${n(d.gu)}</td><td style="${num}">${n(d.grec)}</td><td style="${num}">${n(d.gtok)}</td><td style="${num}">${n(d.gweb)}</td>
+                    <td style="${num}">${awal}</td>
+                    <td style="${num}">${keluar}</td>
+                    <td style="${num} background-color:#dcfce7; font-weight:bold;">${sisa}</td>
+                    <td style="${cell}">${status}</td>
+                </tr>`;
+            });
+
+            const th = (t, bg) => `<th style="padding:10px; background-color:${bg || '#4338ca'}; color:white;">${t}</th>`;
+            const fmt = (v) => v.toLocaleString('id-ID');
+            const brandRows = Object.keys(perBrand).sort().map(b => `<tr><td style="${cell}">${esc(b)}</td><td style="${num}">${perBrand[b].sku}</td><td style="${num}">${perBrand[b].awal}</td><td style="${num} font-weight:bold;">${perBrand[b].sisa}</td></tr>`).join('');
+
+            const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+            <head><meta charset="UTF-8">
+            <!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>Master Inventory</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
+            </head><body>
+            <h2 style="font-family:sans-serif;">Master Inventory & Total Stok Gudang</h2>
+            <p style="font-family:sans-serif;"><b>Waktu Download:</b> ${esc(new Date().toLocaleString('id-ID'))}<br>
+            <b>Jumlah SKU:</b> ${fmt(rows.length)}<br>
+            <b>Total Stok Awal (upload):</b> ${fmt(T.awal)} pcs<br>
+            <b>Sedang di Bazaar:</b> ${fmt(T.keluar)} pcs<br>
+            <b style="font-size:16px; color:#047857;">TOTAL STOK DI GUDANG: ${fmt(T.sisa)} pcs</b></p>
+            <table border="1" style="border-collapse:collapse; font-family:sans-serif; font-size:12px;">
+                <thead><tr>${th('No')}${th('Brand')}${th('Produk (Baju)')}${th('Variant')}${th('Kode Item')}${th('Collection')}${th('BTK')}${th('GU')}${th('GREC')}${th('GTOK')}${th('GWEB')}${th('Total Stok Awal (Upload)', '#0369a1')}${th('Sedang di Bazaar', '#b45309')}${th('TOTAL STOK DI GUDANG', '#047857')}${th('Status')}</tr></thead>
+                <tbody>${body}</tbody>
+                <tfoot><tr style="background-color:#e2e8f0; font-weight:bold;">
+                    <td style="${cell}" colspan="6">GRAND TOTAL (${fmt(rows.length)} SKU)</td>
+                    <td style="${num}">${T.btk}</td><td style="${num}">${T.gu}</td><td style="${num}">${T.grec}</td><td style="${num}">${T.gtok}</td><td style="${num}">${T.gweb}</td>
+                    <td style="${num}">${T.awal}</td><td style="${num}">${T.keluar}</td>
+                    <td style="${num} background-color:#bbf7d0; font-size:14px;">${T.sisa}</td><td style="${cell}"></td>
+                </tr></tfoot>
+            </table>
+            <br>
+            <h3 style="font-family:sans-serif;">Rekap Total Stok Gudang per Brand</h3>
+            <table border="1" style="border-collapse:collapse; font-family:sans-serif; font-size:12px;">
+                <thead><tr>${th('Brand')}${th('Jumlah SKU')}${th('Stok Awal', '#0369a1')}${th('Stok di Gudang', '#047857')}</tr></thead>
+                <tbody>${brandRows}</tbody>
+                <tfoot><tr style="background-color:#e2e8f0; font-weight:bold;"><td style="${cell}">TOTAL</td><td style="${num}">${rows.length}</td><td style="${num}">${T.awal}</td><td style="${num} background-color:#bbf7d0;">${T.sisa}</td></tr></tfoot>
+            </table>
+            </body></html>`;
+
+            const blob = new Blob(['\ufeff' + html], { type: 'application/vnd.ms-excel;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `Master_Inventory_${new Date().toISOString().split('T')[0]}.xls`;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 1500);
+            logActivity('Export Master Inventory', `Download master inventory (${rows.length} SKU, total stok gudang ${T.sisa} pcs)`);
+        }
         // ==========================================
         // FITUR EXPORT LAPORAN EXCEL
         // ==========================================
