@@ -19,7 +19,7 @@
     <!-- FIREBASE SDK (MODULAR) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit, writeBatch, increment, runTransaction } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit, writeBatch, increment, runTransaction, where, getDocs } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyCv-wlyi4DXxhA-z5mI52-8DeLxpwLaNj8",
@@ -40,7 +40,7 @@
             db = getFirestore(app);
         }
 
-        window.db = db; window.doc = doc; window.setDoc = setDoc; window.addDoc = addDoc; window.updateDoc = updateDoc; window.deleteDoc = deleteDoc; window.collection = collection; window.query = query; window.orderBy = orderBy; window.limit = limit; window.onSnapshot = onSnapshot; window.writeBatch = writeBatch; window.increment = increment; window.runTransaction = runTransaction;
+        window.db = db; window.doc = doc; window.setDoc = setDoc; window.addDoc = addDoc; window.updateDoc = updateDoc; window.deleteDoc = deleteDoc; window.collection = collection; window.query = query; window.orderBy = orderBy; window.limit = limit; window.onSnapshot = onSnapshot; window.writeBatch = writeBatch; window.increment = increment; window.runTransaction = runTransaction; window.where = where; window.getDocs = getDocs;
         window.dispatchEvent(new Event('firebase-ready'));
     </script>
 
@@ -632,7 +632,7 @@
         };
         
         let loadedCollections = new Set(); // Mencegah penghitungan loading ganda
-        const totalCollectionsToLoad = 5; 
+        const totalCollectionsToLoad = 1; // sebelum login hanya koleksi users yang dibaca 
         let currentActiveTab = ''; 
         let isAppReady = false; // Mengunci layar loading agar hanya terpicu 1 kali
         
@@ -738,7 +738,7 @@
         }
 
         function forceLogout(msg) {
-            currentUser = null; sessionStorage.removeItem('loggedInUser');
+            currentUser = null; sessionStorage.removeItem('loggedInUser'); stopDataListeners();
             activeBazaarName = ""; sessionStorage.removeItem('activeBazaarName');
             try { closeScanner(); } catch (_) {}
             hideGlobalLoader(); showLogin();
@@ -757,53 +757,122 @@
             }
         };
 
+        // ------------------------------------------------------------------
+        // PEMBACAAN DATA HEMAT KUOTA
+        //  - Sebelum login : hanya koleksi 'users'
+        //  - Setelah login : master_inventory + bazaars_list
+        //  - bazaar_items  : Superadmin = semua; Sales/Gudang = hanya bazaar yang dipilih
+        //                    (Gudang sebelum memilih bazaar = hanya yang berstatus active)
+        //  - activity_logs : hanya saat Superadmin membuka tab Log
+        // ------------------------------------------------------------------
+        let dataGate = new Set(), listenersOn = false, itemsKey = null, gateTimer = null;
+        const unsubs = { master: null, bazaars: null, items: null, logs: null };
+        const snapToArray = (snapshot) => { const arr = new Array(snapshot.size); let n = 0; snapshot.forEach(d => { arr[n++] = { _docId: d.id, ...d.data() }; }); return arr; };
+
+        function armGateTimeout() {
+            if (gateTimer) clearTimeout(gateTimer);
+            gateTimer = setTimeout(() => { if (dataGate.size) { console.warn('Loading timeout - lanjut dengan data tersedia'); dataGate.clear(); hideGlobalLoader(); if (currentUser) refreshUI(); } }, 10000);
+        }
+        function gateDone(col) {
+            if (dataGate.delete(col) && dataGate.size === 0) { hideGlobalLoader(); if (isAppReady && currentUser) refreshUI(); }
+        }
+
+        function startDataListeners() {
+            if (!currentUser) return;
+            if (!listenersOn) {
+                listenersOn = true;
+                dataGate = new Set(['master_inventory', 'bazaars_list']);
+                showGlobalLoader(); armGateTimeout();
+
+                unsubs.master = window.onSnapshot(window.collection(db, 'master_inventory'), (snapshot) => {
+                    const arr = snapToArray(snapshot);
+                    window.appState['master_inventory'] = arr; masterVer++;
+                    masterMap = new Map(arr.map(m => [String(m.code || '').toLowerCase(), m]));
+                    gateDone('master_inventory');
+                    if (isAppReady) debouncedRefreshUI();
+                }, (err) => { console.error('Listener error [master_inventory]:', err); gateDone('master_inventory'); });
+
+                unsubs.bazaars = window.onSnapshot(window.collection(db, 'bazaars_list'), (snapshot) => {
+                    window.appState['bazaars_list'] = snapToArray(snapshot);
+                    gateDone('bazaars_list');
+                    if (isAppReady) debouncedRefreshUI();
+                }, (err) => { console.error('Listener error [bazaars_list]:', err); gateDone('bazaars_list'); });
+            }
+            subscribeItems();
+        }
+
+        function subscribeItems() {
+            const d = currentUser && currentUser.departemen;
+            let key = 'none', q = null;
+            const col = window.collection(db, 'bazaar_items');
+            if (d === 'Superadmin') { key = 'all'; q = col; }
+            else if (d && activeBazaarName) { key = 'b:' + activeBazaarName; q = window.query(col, window.where('bazaar_name', '==', activeBazaarName)); }
+            else if (d === 'Gudang') { key = 'active'; q = window.query(col, window.where('status', '==', 'active')); }
+            if (key === itemsKey) return;
+
+            if (unsubs.items) { unsubs.items(); unsubs.items = null; }
+            itemsKey = key;
+            window.appState['bazaar_items'] = []; itemMap = new Map();
+            if (!q) return;
+
+            if (!dataGate.has('bazaar_items')) { dataGate.add('bazaar_items'); showGlobalLoader(); }
+            armGateTimeout();
+            unsubs.items = window.onSnapshot(q, (snapshot) => {
+                const arr = snapToArray(snapshot);
+                window.appState['bazaar_items'] = arr;
+                itemMap = new Map(arr.map(i => [String(i.id), i]));
+                gateDone('bazaar_items');
+                if (isAppReady) debouncedRefreshUI();
+            }, (err) => { console.error('Listener error [bazaar_items]:', err); gateDone('bazaar_items'); });
+        }
+
+        function stopDataListeners() {
+            Object.keys(unsubs).forEach(k => { if (unsubs[k]) { try { unsubs[k](); } catch (_) {} unsubs[k] = null; } });
+            listenersOn = false; itemsKey = null; dataGate.clear();
+            ['master_inventory', 'bazaars_list', 'bazaar_items', 'activity_logs'].forEach(c => { window.appState[c] = []; });
+            masterMap = new Map(); itemMap = new Map(); masterVer++;
+        }
+
+        function startLogs() {
+            if (unsubs.logs || !currentUser || currentUser.departemen !== 'Superadmin') return;
+            const q = window.query(window.collection(db, 'activity_logs'), window.orderBy('id', 'desc'), window.limit(100));
+            unsubs.logs = window.onSnapshot(q, (snapshot) => {
+                window.appState['activity_logs'] = snapToArray(snapshot);
+                if (currentActiveTab === 'tab-log') renderLogs();
+            }, (err) => console.error('Listener error [activity_logs]:', err));
+        }
+        function stopLogs() { if (unsubs.logs) { unsubs.logs(); unsubs.logs = null; } }
+
+        // Ambil data satu bazaar sekali saja (tanpa listener) bila belum dimuat
+        async function fetchBazaarItems(bName, onlyActive) {
+            const local = DB.get('bazaar_items').filter(i => i.bazaar_name === bName && (!onlyActive || i.status === 'active'));
+            if (itemsKey === 'all' || itemsKey === 'b:' + bName || (onlyActive && itemsKey === 'active')) return local;
+            const snap = await window.getDocs(window.query(window.collection(db, 'bazaar_items'), window.where('bazaar_name', '==', bName)));
+            return snapToArray(snap).filter(i => !onlyActive || i.status === 'active');
+        }
+
         window.addEventListener('firebase-ready', () => {
-            const collections = ['users', 'master_inventory', 'bazaar_items', 'bazaars_list'];
-            const markLoaded = (col) => { loadedCollections.add(col); checkInitialLoad(); };
+            const markLoaded = () => { loadedCollections.add('users'); checkInitialLoad(); };
+            window.onSnapshot(window.collection(db, 'users'), (snapshot) => {
+                const fetchedItems = snapToArray(snapshot);
 
-            collections.forEach(col => {
-                window.onSnapshot(window.collection(db, col), (snapshot) => {
-                    const fetchedItems = new Array(snapshot.size);
-                    let n = 0;
-                    snapshot.forEach(d => { fetchedItems[n++] = { _docId: d.id, ...d.data() }; });
+                // Buat admin default HANYA jika data benar-benar dari server & kosong
+                if (fetchedItems.length === 0 && !snapshot.metadata.fromCache) {
+                    window.setDoc(window.doc(db, 'users', 'admin'), { username: 'admin', password: 'admin', departemen: 'Superadmin' });
+                }
+                window.appState['users'] = fetchedItems;
 
-                    // Buat admin default HANYA jika data benar-benar dari server & kosong
-                    // (sebelumnya bisa menimpa password admin asli saat cache lokal kosong/offline)
-                    if (col === 'users' && fetchedItems.length === 0 && !snapshot.metadata.fromCache) {
-                        window.setDoc(window.doc(db, 'users', 'admin'), { username: 'admin', password: 'admin', departemen: 'Superadmin' });
-                    }
-
-                    window.appState[col] = fetchedItems;
-                    if (col === 'users' && isAppReady && currentUser && !snapshot.metadata.fromCache) {
-                        const me = fetchedItems.find(u => String(u.username).toLowerCase() === String(currentUser.username).toLowerCase());
-                        if (!me) forceLogout('Akun Anda telah dihapus oleh admin.');
-                        else if (me.password !== currentUser.password || me.departemen !== currentUser.departemen) forceLogout('Data akun Anda diubah. Silakan login ulang.');
-                    }
-                    if (col === 'master_inventory') {
-                        masterVer++;
-                        masterMap = new Map(fetchedItems.map(m => [String(m.code || '').toLowerCase(), m]));
-                    } else if (col === 'bazaar_items') {
-                        itemMap = new Map(fetchedItems.map(i => [String(i.id), i]));
-                    }
-                    markLoaded(col);
-                    if (isAppReady) debouncedRefreshUI(); 
-                }, (err) => { console.error('Listener error [' + col + ']:', err); markLoaded(col); });
-            });
-
-            // Activity Log di-limit 100 terakhir agar tidak berat
-            const logsQ = window.query(window.collection(db, 'activity_logs'), window.orderBy('id', 'desc'), window.limit(100));
-            window.onSnapshot(logsQ, (snapshot) => {
-                let fetchedLogs = [];
-                snapshot.forEach(doc => { fetchedLogs.push({ _docId: doc.id, ...doc.data() }); });
-                window.appState['activity_logs'] = fetchedLogs;
-                markLoaded('activity_logs');
-                if (isAppReady && currentActiveTab === 'tab-log') renderLogs();
-            }, (err) => { console.error('Listener error [activity_logs]:', err); markLoaded('activity_logs'); });
+                if (isAppReady && currentUser && !snapshot.metadata.fromCache) {
+                    const me = fetchedItems.find(u => String(u.username).toLowerCase() === String(currentUser.username).toLowerCase());
+                    if (!me) forceLogout('Akun Anda telah dihapus oleh admin.');
+                    else if (me.password !== currentUser.password || me.departemen !== currentUser.departemen) forceLogout('Data akun Anda diubah. Silakan login ulang.');
+                }
+                markLoaded();
+                if (isAppReady && currentUser && currentActiveTab === 'tab-sistem') debouncedRefreshUI();
+            }, (err) => { console.error('Listener error [users]:', err); markLoaded(); });
 
             // Pengaman: jangan biarkan layar loading menggantung selamanya bila jaringan bermasalah
-            setTimeout(() => {
-                if (!isAppReady) { console.warn('Loading timeout - lanjut dengan data yang tersedia'); ['users','master_inventory','bazaar_items','bazaars_list','activity_logs'].forEach(markLoaded); }
-            }, 10000);
+            setTimeout(() => { if (!isAppReady) { console.warn('Loading timeout - lanjut dengan data yang tersedia'); markLoaded(); } }, 10000);
         });
 
         function checkInitialLoad() {
@@ -831,7 +900,7 @@
 
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => { 
-                navigator.serviceWorker.register('./sw.js?v=update5').catch(e => console.log(e)); 
+                navigator.serviceWorker.register('./sw.js?v=update6').catch(e => console.log(e)); 
             });
         }
 
@@ -1184,7 +1253,7 @@
                     logActivity('Login', 'Berhasil login ke sistem');
                     showDashboard(); 
                     document.getElementById('loginUser').value = ''; document.getElementById('loginPass').value = ''; 
-                    hideGlobalLoader();
+                    if (dataGate.size === 0) hideGlobalLoader();
                 }, 0);
             } else { await UI.alert("Gagal", "Username/Password salah.", "error"); }
         }
@@ -1232,7 +1301,7 @@
                 showGlobalLoader();
                 setTimeout(() => {
                     logActivity('Logout', 'Keluar dari sistem');
-                    currentUser = null; sessionStorage.removeItem('loggedInUser');
+                    currentUser = null; sessionStorage.removeItem('loggedInUser'); stopDataListeners();
                     activeBazaarName = ""; sessionStorage.removeItem('activeBazaarName'); 
                     showLogin(); 
                     hideGlobalLoader();
@@ -1250,6 +1319,7 @@
                 if (t === 'tab-permintaan' && _lastMasterVer !== masterVer) populateProductDropdown();
                 if (tableTab) renderTablesBazaar();
             }
+            else if (d === 'Sales' && !activeBazaarName) populateSalesBazaarDropdown();
             else if (d === 'Gudang' && !activeBazaarName) populateGudangBazaarDropdown();
             else if (d === 'Gudang' && activeBazaarName) { if (tableTab) renderTablesBazaar(); }
             else if (d === 'Superadmin') {
@@ -1261,6 +1331,7 @@
             if (t === 'tab-master') renderMasterDateStatus();
         }
         function showDashboard() {
+            startDataListeners();
             document.getElementById('loginSection').classList.add('hidden'); document.getElementById('dashboardSection').classList.remove('hidden'); document.getElementById('navbar').classList.remove('hidden');
             document.getElementById('navUsername').innerText = currentUser.username; let badge = document.getElementById('navRole'); badge.innerText = currentUser.departemen;
             badge.className = 'badge ' + (currentUser.departemen === 'Gudang' ? 'bg-gudang' : (currentUser.departemen === 'Sales' ? 'bg-sales' : 'bg-admin'));
@@ -1289,6 +1360,7 @@
         function openTab(tabId) {
             currentActiveTab = tabId; 
             resetPage(); 
+            if (tabId === 'tab-log') startLogs(); else stopLogs();
 
             ['tab-master', 'tab-permintaan', 'tab-packing', 'tab-stok', 'tab-riwayat', 'tab-sistem', 'tab-log'].forEach(id => { let el = document.getElementById(id); if(el) el.classList.remove('active'); });
             document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
@@ -1296,7 +1368,7 @@
 
             refreshUI(); 
         }
-        function populateSalesBazaarDropdown() { let bazaars = DB.get('bazaars_list'); let select = document.getElementById('salesBazaarSelect'); let html = '<option value="">-- Pilih Bazaar --</option><option value="NEW" style="font-weight:bold; color:var(--primary);">+ Buka/Buat Bazaar Baru</option>'; bazaars.forEach(b => html += `<option value="${esc(b.name)}">${esc(b.name)} (${esc(b.start_date)} s/d ${esc(b.end_date)})</option>`); select.innerHTML = html; toggleNewBazaarInput(); }
+        function populateSalesBazaarDropdown() { let bazaars = DB.get('bazaars_list'); let select = document.getElementById('salesBazaarSelect'); let prevSel = select.value; let html = '<option value="">-- Pilih Bazaar --</option><option value="NEW" style="font-weight:bold; color:var(--primary);">+ Buka/Buat Bazaar Baru</option>'; bazaars.forEach(b => html += `<option value="${esc(b.name)}">${esc(b.name)} (${esc(b.start_date)} s/d ${esc(b.end_date)})</option>`); select.innerHTML = html; if (prevSel && Array.from(select.options).some(o => o.value === prevSel)) select.value = prevSel; toggleNewBazaarInput(); }
         function toggleNewBazaarInput() { let s = document.getElementById('salesBazaarSelect').value; let c = document.getElementById('newBazaarContainer'); let btnH = document.getElementById('btnHapusBazaarSales'); if(s === 'NEW') { c.classList.remove('hidden'); if(btnH) btnH.classList.add('hidden'); } else { c.classList.add('hidden'); if(s !== '' && btnH) btnH.classList.remove('hidden'); else if(btnH) btnH.classList.add('hidden'); } }
         async function setBazaarName() {
             let s = document.getElementById('salesBazaarSelect').value; let bName = "";
@@ -1915,7 +1987,7 @@
         }
         
         async function hapusBazaarData(bName) {
-            let itemsToRemove = DB.get('bazaar_items').filter(i => i.bazaar_name === bName && i.status === 'active');
+            let itemsToRemove = await fetchBazaarItems(bName, true);
             let promises = [];
             promises.push(WB.del(window.doc(db, 'bazaars_list', bName)));
             
@@ -2458,8 +2530,8 @@
             }
 
             showGlobalLoader();
-            setTimeout(() => {
-                let allItems = DB.get('bazaar_items').filter(i => i.bazaar_name === targetBazaar);
+            setTimeout(async () => {
+                let allItems = await fetchBazaarItems(targetBazaar, false);
                 let itemsToExport = type === 'sokembali' ? allItems : allItems.filter(i => i.status === 'active');
 
                 if (itemsToExport.length === 0) {
