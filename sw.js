@@ -1,5 +1,5 @@
 // Service Worker - Sistem Bazaar ZS & Shi (offline-first, lebih cepat)
-const CACHE_NAME = 'zs-bazaar-v6';
+const CACHE_NAME = 'zs-bazaar-v7';
 
 // File lokal & library eksternal yang di-cache saat install
 const LOCAL_ASSETS = ['./', './index.html', './manifest.json'];
