@@ -478,7 +478,9 @@
                 <div class="card tab-content" id="tab-log">
                     <div class="flex-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                         <h3 style="margin: 0;">📜 Log Aktivitas Sistem</h3>
+                        <button class="btn-danger" style="width:auto; padding:8px 14px; font-size:0.8rem;" onclick="hapusLog()">🗑️ Hapus Log</button>
                     </div>
+                    <p class="info-text" style="margin: 0 0 10px 0;">Menampilkan maksimal 100 log terbaru. Log hanya dimuat saat tab ini dibuka.</p>
                     <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
                         <table>
                             <thead><tr><th>Waktu</th><th>User</th><th>Role</th><th>Aksi</th><th>Detail</th></tr></thead>
@@ -843,6 +845,37 @@
         }
         function stopLogs() { if (unsubs.logs) { unsubs.logs(); unsubs.logs = null; } }
 
+        // Hapus log aktivitas (Superadmin). Dihapus per 400 dokumen; biaya: 1 baca + 1 hapus per log yang dihapus.
+        async function hapusLog() {
+            if (!currentUser || currentUser.departemen !== 'Superadmin') return;
+            if (!navigator.onLine) return UI.alert("Offline", "Hapus log hanya bisa dilakukan saat terhubung ke internet.", "warning");
+            const opt = await UI.select("Hapus Log Aktivitas", "Pilih log yang akan dihapus:", ["Lebih dari 7 hari", "Lebih dari 30 hari", "Semua log"]);
+            if (!opt) return;
+            const conf = await UI.confirm("Hapus Log?", `Log aktivitas (${opt.toLowerCase()}) akan dihapus PERMANEN dan tidak bisa dikembalikan.`, "error", "Ya, Hapus", "Batal");
+            if (!conf) return;
+
+            const days = opt === "Lebih dari 7 hari" ? 7 : (opt === "Lebih dari 30 hari" ? 30 : 0);
+            const cutoff = Date.now() - days * 86400000;
+            showGlobalLoader();
+            try {
+                let total = 0;
+                const col = window.collection(db, 'activity_logs');
+                while (true) {
+                    const q = days === 0 ? window.query(col, window.limit(400)) : window.query(col, window.where('id', '<', cutoff), window.limit(400));
+                    const snap = await window.getDocs(q);
+                    if (snap.size === 0) break;
+                    const batch = window.writeBatch(db);
+                    snap.forEach(d => batch.delete(window.doc(db, 'activity_logs', d.id)));
+                    await batch.commit();
+                    total += snap.size;
+                    if (snap.size < 400) break;
+                }
+                hideGlobalLoader();
+                logActivity('Hapus Log', `Menghapus ${total} log aktivitas (${opt.toLowerCase()})`);
+                UI.alert("Sukses", `${total} log berhasil dihapus.`, "success");
+            } catch (e) { showWriteError(e); }
+        }
+
         // Ambil data satu bazaar sekali saja (tanpa listener) bila belum dimuat
         async function fetchBazaarItems(bName, onlyActive) {
             const local = DB.get('bazaar_items').filter(i => i.bazaar_name === bName && (!onlyActive || i.status === 'active'));
@@ -900,7 +933,7 @@
 
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => { 
-                navigator.serviceWorker.register('./sw.js?v=update6').catch(e => console.log(e)); 
+                navigator.serviceWorker.register('./sw.js?v=update7').catch(e => console.log(e)); 
             });
         }
 
