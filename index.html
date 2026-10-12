@@ -677,6 +677,8 @@
 
         // ---------- HELPER BARU ----------
         const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        let _idSeq = 0;
+        const newItemId = () => Date.now() * 1000 + (_idSeq++ % 1000);   // unik walau dibuat dalam milidetik yang sama
         const nowReq = () => new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'});
         const masterDocId = (code) => String(code).trim().replace(/\//g, '_');
 
@@ -701,7 +703,7 @@
                 const ops = this.q.splice(0);
                 const totalW = ops.reduce((a, o) => a + o.w, 0);
                 if (checks && checks.length && navigator.onLine && window.runTransaction && totalW <= 450) {
-                    await window.runTransaction(db, async (tx) => {
+                    await runTx(async (tx) => {
                         for (const c of checks) {
                             const snap = await tx.get(c.ref);
                             const avail = snap.exists() ? (Number(snap.data().total) || 0) : 0;
@@ -734,9 +736,31 @@
             else if (code === 'resource-exhausted') text = 'Kuota harian Firestore habis. Coba lagi besok atau upgrade paket Firebase.';
             else if (code === 'unavailable' || code === 'deadline-exceeded') text = 'Koneksi ke server bermasalah. Periksa internet lalu coba lagi.';
             else if (code === 'aborted' || code === 'failed-precondition') text = 'Data sedang diubah user lain. Silakan coba lagi.';
-            else text = 'Terjadi kesalahan: ' + (msg || 'tidak diketahui');
+            else text = 'Terjadi kesalahan' + (code ? ' (' + code + ')' : '') + ': ' + (msg || 'tidak diketahui');
             try { if (currentUser) renderTablesBazaar(); } catch (_) {}
             return UI.alert('Gagal Menyimpan', text, 'error');
+        }
+
+        // Notifikasi kecil agar user tahu aksi berhasil tersimpan
+        function showToast(text) {
+            let t = document.getElementById('appToast');
+            if (!t) { t = document.createElement('div'); t.id = 'appToast'; t.style.cssText = 'position:fixed; left:50%; bottom:28px; transform:translateX(-50%); background:#065f46; color:#fff; padding:12px 20px; border-radius:10px; font-weight:600; font-size:0.9rem; z-index:99999; box-shadow:0 6px 20px rgba(0,0,0,.25); transition:opacity .3s; pointer-events:none;'; document.body.appendChild(t); }
+            t.textContent = text; t.style.opacity = '1';
+            clearTimeout(t._h); t._h = setTimeout(() => { t.style.opacity = '0'; }, 2500);
+        }
+
+        // Transaksi dengan batas waktu: tidak boleh menggantung tanpa kabar
+        function runTx(fn, ms = 20000) {
+            let timer;
+            const guard = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('APP:Server tidak merespons dalam ' + (ms / 1000) + ' detik. Periksa internet dan kuota Firestore (Firebase Console > Usage). Cek dulu apakah perubahan sudah masuk sebelum mengulang.')), ms); });
+            return Promise.race([window.runTransaction(db, fn), guard]).finally(() => clearTimeout(timer));
+        }
+
+        // Terapkan perubahan ke data lokal seketika (tidak menunggu kiriman balik dari server)
+        function patchLocalItem(docId, patch) {
+            const arr = window.appState['bazaar_items'] || [];
+            const it = arr.find(x => x._docId === docId);
+            if (it) Object.assign(it, patch);
         }
 
         function forceLogout(msg) {
@@ -822,7 +846,7 @@
             unsubs.items = window.onSnapshot(q, (snapshot) => {
                 const arr = snapToArray(snapshot);
                 window.appState['bazaar_items'] = arr;
-                itemMap = new Map(arr.map(i => [String(i.id), i]));
+                itemMap = new Map(arr.map(i => [String(i._docId), i]));
                 gateDone('bazaar_items');
                 if (isAppReady) debouncedRefreshUI();
             }, (err) => { console.error('Listener error [bazaar_items]:', err); gateDone('bazaar_items'); });
@@ -933,7 +957,7 @@
 
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => { 
-                navigator.serviceWorker.register('./sw.js?v=update7').catch(e => console.log(e)); 
+                navigator.serviceWorker.register('./sw.js?v=update9').catch(e => console.log(e)); 
             });
         }
 
@@ -1224,7 +1248,7 @@
             if (targetIndex === -1) return UI.alert("Tidak Ditemukan", `Kode produk "${scannedCode}" tidak ditemukan pada daftar aktif bazaar ini.\n\nPastikan Sales sudah menambahkan barang ini ke daftar permintaan.`, "error");
 
             let targetItem = items[targetIndex];
-            let rowId = actionType === 'kemas' ? `row_sk_${targetItem.id}` : `row_s_${targetItem.id}`;
+            let rowId = actionType === 'kemas' ? `row_sk_${targetItem._docId}` : `row_s_${targetItem._docId}`;
             
             setTimeout(() => {
                 if (actionType === 'kemas') {
@@ -1254,13 +1278,13 @@
                     if(rowEl) { rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); rowEl.classList.add('scanned-highlight'); setTimeout(() => rowEl.classList.remove('scanned-highlight'), 2000); }
                 }, 100);
 
-                if (actionType === 'kemas') openPackingModal(targetItem.id); 
+                if (actionType === 'kemas') openPackingModal(targetItem._docId); 
                 else if (actionType === 'jual') {
                     let st = targetItem.status_pengiriman || "Menunggu Gudang";
-                    if(st === 'Dikemas') terimaBarangSales(targetItem.id); 
-                    else catatPenjualan(targetItem.id);
+                    if(st === 'Dikemas') terimaBarangSales(targetItem._docId); 
+                    else catatPenjualan(targetItem._docId);
                 } else if (actionType === 'opname') {
-                    stockOpname(targetItem.id);
+                    stockOpname(targetItem._docId);
                 }
 
             }, 0);
@@ -1302,7 +1326,7 @@
                     {
                         const uRef = window.doc(db, 'users', user.toLowerCase()); const uData = { username: user, password: pass, departemen: dept };
                         if (navigator.onLine && window.runTransaction) {
-                            await window.runTransaction(db, async (tx) => { const sn = await tx.get(uRef); if (sn.exists()) throw new Error('APP:Username sudah digunakan.'); tx.set(uRef, uData); });
+                            await runTx(async (tx) => { const sn = await tx.get(uRef); if (sn.exists()) throw new Error('APP:Username sudah digunakan.'); tx.set(uRef, uData); });
                         } else { await window.setDoc(uRef, uData); }
                     }
                     hideGlobalLoader();
@@ -1502,7 +1526,7 @@
                         promises.push(WB.update(window.doc(db, 'bazaar_items', existing._docId), updatedData));
                     } else {
                         promises.push(WB.add(window.collection(db, 'bazaar_items'), {
-                            id: Date.now() + Math.random(), bazaar_name: activeBazaarName, brand: d.ref.brand, product: d.ref.product, variant: d.ref.variant, code: d.code, collection: d.ref.collection || "-", original_qty: qty, qty_in: qty, qty_sold: 0, status: 'active', fisik_kembali: 0, status_pengiriman: 'Menunggu Gudang', keterangan_gudang: '-', req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}), keterangan_sales: ketSales || "-", display_req_qty: isDisplay ? parsedDisplayQty : 0, display_req_type: isDisplay ? 'tambahan' : null 
+                            id: newItemId(), bazaar_name: activeBazaarName, brand: d.ref.brand, product: d.ref.product, variant: d.ref.variant, code: d.code, collection: d.ref.collection || "-", original_qty: qty, qty_in: qty, qty_sold: 0, status: 'active', fisik_kembali: 0, status_pengiriman: 'Menunggu Gudang', keterangan_gudang: '-', req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}), keterangan_sales: ketSales || "-", display_req_qty: isDisplay ? parsedDisplayQty : 0, display_req_type: isDisplay ? 'tambahan' : null 
                         }));
                     }
                 });
@@ -1601,7 +1625,7 @@
                         promises.push(WB.update(window.doc(db, 'bazaar_items', existing._docId), updatedData));
                     } else { 
                         promises.push(WB.add(window.collection(db, 'bazaar_items'), {
-                            id: Date.now() + Math.random(), bazaar_name: activeBazaarName, brand: d.brand, product: d.product, variant: d.variant, code: d.code, collection: d.collection, original_qty: d.qty, qty_in: d.qty, qty_sold: 0, status: 'active', fisik_kembali: 0, status_pengiriman: 'Menunggu Gudang', keterangan_gudang: '-', req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}), keterangan_sales: finalKet, display_req_qty: isDisplay ? parsedDisplayQty : 0, display_req_type: isDisplay ? 'tambahan' : null 
+                            id: newItemId(), bazaar_name: activeBazaarName, brand: d.brand, product: d.product, variant: d.variant, code: d.code, collection: d.collection, original_qty: d.qty, qty_in: d.qty, qty_sold: 0, status: 'active', fisik_kembali: 0, status_pengiriman: 'Menunggu Gudang', keterangan_gudang: '-', req_date: new Date().toLocaleString('id-ID', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}), keterangan_sales: finalKet, display_req_qty: isDisplay ? parsedDisplayQty : 0, display_req_type: isDisplay ? 'tambahan' : null 
                         }));
                     }
                 });
@@ -1638,7 +1662,7 @@
         }
 
         function openPackingModal(id) {
-            let items = DB.get('bazaar_items'); let item = items.find(i => String(i.id) === String(id)); if(!item) return;
+            let item = getItem(id); if(!item) return;
             currentPackingId = id; document.getElementById('packCode').innerText = `KODE: ${item.code}`;
             let reqNotes = item.keterangan_sales && item.keterangan_sales !== "-" ? `<br>Ket Sales: <strong>${item.keterangan_sales}</strong>` : "";
             document.getElementById('packReqSales').innerHTML = `Permintaan Awal: <strong>${item.original_qty} pcs</strong>${reqNotes}`;
@@ -1714,7 +1738,7 @@
         async function savePacking() {
             let items = DB.get('bazaar_items');
             let invItems = DB.get('master_inventory');
-            let item = items.find(i => String(i.id) === String(currentPackingId));
+            let item = getItem(currentPackingId);
             if(!item) { closePackingModal(); return UI.alert("Data Berubah", "Barang ini sudah dihapus oleh user lain.", "warning"); }
 
             let st = document.getElementById('packStatus').value;
@@ -1761,13 +1785,14 @@
             if(qReal > orig) return UI.alert("Ditolak", `Tidak boleh melebihi permintaan awal (${orig} pcs).`, "error");
             let diffStore = item.qty_in - qReal;
             
+            console.info('[packing] menyimpan', item.code, { status: statusPengiriman, qty: qReal, kardus: finalKardus });
             showGlobalLoader();
             try {
                 const iRef = window.doc(db, 'bazaar_items', item._docId);
                 const mItem = getMaster(item.code);
                 const payload = { status_pengiriman: statusPengiriman, kardus: finalKardus, keterangan_gudang: finalKet, qty_in: qReal };
                 if (navigator.onLine && window.runTransaction) {
-                    await window.runTransaction(db, async (tx) => {
+                    await runTx(async (tx) => {
                         const snap = await tx.get(iRef);
                         if (!snap.exists()) throw new Error('APP:Barang ini sudah dihapus oleh user lain.');
                         const cur = snap.data();
@@ -1787,9 +1812,13 @@
                     if (diffStore !== 0 && mItem) WB.update(window.doc(db, 'master_inventory', mItem._docId), { total: window.increment(diffStore) });
                     await WB.flush();
                 }
+                console.info('[packing] tersimpan', item.code, payload);
+                patchLocalItem(item._docId, payload);
                 logActivity('Packing Barang', `Packing kode ${item.code} dengan jumlah ${qReal} (Status: ${st})`);
                 hideGlobalLoader();
                 closePackingModal();
+                renderTablesBazaar();
+                showToast('✅ Packing ' + item.code + ' tersimpan');
             } catch(e) { showWriteError(e); }
         }
 
@@ -1842,7 +1871,7 @@
                     return { qty_revisi_sales: newQty, status_pengiriman: 'Diterima Sales (Revisi)', keterangan_sales: prevNote + `Revisi Terima: ${newQty} pcs (${note || 'Tanpa keterangan'})` };
                 };
                 if (navigator.onLine && window.runTransaction) {
-                    await window.runTransaction(db, async (tx) => {
+                    await runTx(async (tx) => {
                         const snap = await tx.get(iRef);
                         if (!snap.exists()) throw new Error('APP:Barang ini sudah dihapus oleh user lain.');
                         const cur = snap.data();
@@ -1885,7 +1914,7 @@
             try {
                 const iRef = window.doc(db, 'bazaar_items', itemRef._docId);
                 if (navigator.onLine && window.runTransaction) {
-                    await window.runTransaction(db, async (tx) => {
+                    await runTx(async (tx) => {
                         const snap = await tx.get(iRef);
                         if (!snap.exists()) throw new Error('APP:Barang ini sudah dihapus oleh user lain.');
                         const cur = snap.data();
@@ -1974,7 +2003,7 @@
                     return { upd, restore, q };
                 };
                 if (navigator.onLine && window.runTransaction) {
-                    await window.runTransaction(db, async (tx) => {
+                    await runTx(async (tx) => {
                         const snap = await tx.get(iRef);
                         if (!snap.exists()) throw new Error('APP:Barang ini sudah dihapus oleh user lain.');
                         const { upd, restore, q } = build(snap.data());
@@ -2004,7 +2033,7 @@
             try {
                 const iRef = window.doc(db, 'bazaar_items', itemRef._docId);
                 if (navigator.onLine && window.runTransaction) {
-                    await window.runTransaction(db, async (tx) => {
+                    await runTx(async (tx) => {
                         const snap = await tx.get(iRef);
                         if (!snap.exists()) throw new Error('APP:Barang ini sudah dihapus oleh user lain.');
                         if (snap.data().status === 'done') throw new Error('APP:Barang ini sudah diopname oleh user lain.');
@@ -2047,7 +2076,7 @@
                 const mItem = getMaster(itemRef.code);
                 const restoreOf = (it) => (it.qty_revisi_sales !== undefined ? it.qty_revisi_sales : it.qty_in) - it.qty_sold;
                 if (navigator.onLine && window.runTransaction) {
-                    await window.runTransaction(db, async (tx) => {
+                    await runTx(async (tx) => {
                         const snap = await tx.get(iRef);
                         if (!snap.exists()) throw new Error('APP:Barang ini sudah dihapus oleh user lain.');
                         const it = snap.data();
@@ -2202,26 +2231,26 @@
                         if (item.qty_revisi_sales !== undefined && item.qty_revisi_sales !== item.qty_in) {
                             qtyGudangDisplay = `<span style="text-decoration:line-through; color:var(--danger);">${item.qty_in}</span><br><span style="color:var(--warning); font-size:1.1rem; font-weight:bold;">Revisi: ${item.qty_revisi_sales}</span>`;
                         }
-                        hSK += `<tr class="${tClass}" id="row_sk_${item.id}"><td><strong>${b}</strong></td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center"><strong>${orig} pcs</strong>${ketSalesTxt}</td><td align="center">${qtyGudangDisplay}</td><td>${bdg}<br><small>${kg}</small>${kdText}</td><td><button class="btn-info" onclick="openPackingModal('${item.id}')">Kemas/Edit</button></td></tr>`;
+                        hSK += `<tr class="${tClass}" id="row_sk_${item._docId}"><td><strong>${b}</strong></td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center"><strong>${orig} pcs</strong>${ketSalesTxt}</td><td align="center">${qtyGudangDisplay}</td><td>${bdg}<br><small>${kg}</small>${kdText}</td><td><button class="btn-info" onclick="openPackingModal('${item._docId}')">Kemas/Edit</button></td></tr>`;
                     }
                     if (isStokTab) {
                         if(currentUser.departemen === 'Gudang') {
-                            hS += `<tr class="${tClass}" id="row_s_${item.id}"><td>${esc(item.bazaar_name)}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${sisaSistem}</td><td><button class="btn-warning" onclick="stockOpname('${item.id}')">Opname SO</button></td></tr>`;
+                            hS += `<tr class="${tClass}" id="row_s_${item._docId}"><td>${esc(item.bazaar_name)}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${sisaSistem}</td><td><button class="btn-warning" onclick="stockOpname('${item._docId}')">Opname SO</button></td></tr>`;
                         } else {
                             let bT = '';
                             if (st === 'Dikemas') {
-                                bT = `<button class="btn-primary" style="width:100%; margin-bottom:5px;" onclick="terimaBarangSales('${item.id}')">✅ Sesuai</button>
-                                      <button class="btn-warning" style="width:100%; margin-bottom:5px;" onclick="terimaBarangTidakSesuai('${item.id}')">⚠️ Revisi Qty</button>`;
+                                bT = `<button class="btn-primary" style="width:100%; margin-bottom:5px;" onclick="terimaBarangSales('${item._docId}')">✅ Sesuai</button>
+                                      <button class="btn-warning" style="width:100%; margin-bottom:5px;" onclick="terimaBarangTidakSesuai('${item._docId}')">⚠️ Revisi Qty</button>`;
                             }
                             
-                            let bJ = (st === 'Diterima Sales' || st === 'Diterima Sales (Revisi)') ? `<button class="btn-success" style="width:100%; margin-bottom:5px;" onclick="catatPenjualan('${item.id}')">💸 Jual</button>` : '';
-                            let bO = currentUser.departemen === 'Superadmin' ? `<button class="btn-warning" style="width:100%; margin-bottom:5px;" onclick="stockOpname('${item.id}')">📋 Opname</button>` : '';
+                            let bJ = (st === 'Diterima Sales' || st === 'Diterima Sales (Revisi)') ? `<button class="btn-success" style="width:100%; margin-bottom:5px;" onclick="catatPenjualan('${item._docId}')">💸 Jual</button>` : '';
+                            let bO = currentUser.departemen === 'Superadmin' ? `<button class="btn-warning" style="width:100%; margin-bottom:5px;" onclick="stockOpname('${item._docId}')">📋 Opname</button>` : '';
                             
                             let bD = '';
                             if (item.display_req_qty && item.display_req_qty > 0) {
-                                bD = `<button class="btn-danger" style="width:100%; margin-bottom:5px;" onclick="batalKardusDisplay('${item.id}')">❌ Batal/Edit Display</button>`;
+                                bD = `<button class="btn-danger" style="width:100%; margin-bottom:5px;" onclick="batalKardusDisplay('${item._docId}')">❌ Batal/Edit Display</button>`;
                             } else {
-                                bD = `<button class="btn-info" style="width:100%; margin-bottom:5px;" onclick="mintaKardusDisplay('${item.id}')">📦 Req Display</button>`;
+                                bD = `<button class="btn-info" style="width:100%; margin-bottom:5px;" onclick="mintaKardusDisplay('${item._docId}')">📦 Req Display</button>`;
                             }
                             
                             let qtyDisplay = `<strong style="font-size:1rem;">${item.qty_in}</strong>`;
@@ -2232,12 +2261,12 @@
                                 qtyDisplay += `<div style="font-size:0.85rem; font-weight:bold; color:var(--warning); margin-top:4px;">Diterima: ${item.qty_revisi_sales}</div>`;
                             }
 
-                            hS += `<tr class="${tClass}" id="row_s_${item.id}"><td>${esc(item.bazaar_name)}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${qtyDisplay}</td><td align="center">${item.qty_sold}</td><td align="center"><strong>${sisaSistem}</strong></td><td>${st}${kdText}</td><td><div style="display:flex;flex-direction:column;gap:4px;">${bT}${bJ}${bD}${bO}<button class="btn-danger" style="width:100%;" onclick="hapusBarang('${item.id}')">Hapus</button></div></td></tr>`;
+                            hS += `<tr class="${tClass}" id="row_s_${item._docId}"><td>${esc(item.bazaar_name)}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${qtyDisplay}</td><td align="center">${item.qty_sold}</td><td align="center"><strong>${sisaSistem}</strong></td><td>${st}${kdText}</td><td><div style="display:flex;flex-direction:column;gap:4px;">${bT}${bJ}${bD}${bO}<button class="btn-danger" style="width:100%;" onclick="hapusBarang('${item._docId}')">Hapus</button></div></td></tr>`;
                         }
                     }
                 } else if (isRiwayatTab) {
                     let sel = item.fisik_kembali - sisaSistem;
-                    hO += `<tr><td>${esc(item.bazaar_name)}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${sisaSistem}</td><td align="center">${item.fisik_kembali}</td><td align="center">${sel===0?"✔️":sel}</td>${currentUser.departemen === 'Superadmin' ? `<td><button class="btn-danger" onclick="hapusRiwayat('${item.id}')">Hapus</button></td>` : ''}</tr>`;
+                    hO += `<tr><td>${esc(item.bazaar_name)}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${sisaSistem}</td><td align="center">${item.fisik_kembali}</td><td align="center">${sel===0?"✔️":sel}</td>${currentUser.departemen === 'Superadmin' ? `<td><button class="btn-danger" onclick="hapusRiwayat('${item._docId}')">Hapus</button></td>` : ''}</tr>`;
                 }
             });
 
