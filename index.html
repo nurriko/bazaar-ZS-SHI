@@ -204,11 +204,13 @@
             </div>
             <p class="info-text" style="margin-bottom:10px;">Isi packing banyak barang sekaligus. Download template (sudah berisi daftar barang), isi kolom di sebelah kanan, lalu upload. Baris yang kolom isiannya kosong semua akan diabaikan.</p>
             <div style="background:#f8fafc; border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:0.78rem; color:#475569; line-height:1.55;">
-                <b>Cara mengisi:</b><br>
-                • <b>Status</b>: <code>Sesuai</code> (default), <code>Refill</code> (isi <b>Refill_Hari</b>), atau <code>Kosong</code>.<br>
-                • Satu kardus: isi <b>Kardus_Stok</b> saja (Qty_Dikemas boleh kosong, otomatis = qty diminta).<br>
-                • Pisah display &amp; stok: isi <b>Qty_Display</b> + <b>Kardus_Display</b> (kosong = "Display") dan <b>Kardus_Stok</b>; Qty_Stok otomatis sisanya bila <b>Qty_Dikemas</b> diisi.<br>
-                • Nama kardus display otomatis diawali kata "Display" agar terbaca oleh fitur Sales.
+                <b>Cara mengisi (cukup 3 kolom di kanan):</b><br>
+                • <b>Kardus</b>: nama kardus tempat barang disimpan, mis. <code>K3</code>.<br>
+                • <b>Display</b>: jumlah yang jadi display, tulis <code>2 display</code> atau cukup <code>2</code>. Kosong = tidak ada display.<br>
+                • <b>Qty_Kardus</b>: jumlah di dalam kardus. Kosong = otomatis sisa dari qty diminta setelah display.<br>
+                • Barang kosong/tidak ada: isi <code>0</code> di Qty_Kardus (Display dikosongkan).<br>
+                • Nama kardus display otomatis berawalan "Display" agar terbaca oleh fitur Sales.<br>
+                • Opsional: tambah kolom <b>Status</b> (Sesuai/Refill/Kosong), <b>Refill_Hari</b>, dan <b>Catatan</b> bila diperlukan.
             </div>
             <div class="grid-2" style="gap:12px;">
                 <div class="form-group"><label>Bazaar</label><select id="upBazaar" onchange="bacaFilePacking()"></select></div>
@@ -2438,9 +2440,9 @@
             let items = DB.get('bazaar_items').filter(i => i.bazaar_name === bz && i.status === 'active' && !PK_SUDAH_TERIMA.includes(i.status_pengiriman) &&
                 (semua || (i.status_pengiriman || 'Menunggu Gudang') === 'Menunggu Gudang' || i.status_pengiriman === 'Menunggu Refill Gudang'));
             items.sort((a, b) => String(a.brand || '').localeCompare(String(b.brand || '')) || String(a.product || '').localeCompare(String(b.product || '')) || String(a.code || '').localeCompare(String(b.code || '')));
-            let rows = [['Code', 'Brand', 'Product', 'Variant', 'Qty_Diminta', 'Ket_Sales', 'Status_Saat_Ini', 'Kardus_Saat_Ini', 'Status', 'Refill_Hari', 'Qty_Dikemas', 'Kardus_Display', 'Qty_Display', 'Kardus_Stok', 'Qty_Stok', 'Catatan']];
-            if (items.length) items.forEach(i => rows.push([i.code, i.brand, i.product, i.variant, i.original_qty || i.qty_in, (i.keterangan_sales && i.keterangan_sales !== '-') ? i.keterangan_sales : '', i.status_pengiriman || 'Menunggu Gudang', (i.kardus && i.kardus !== '-') ? i.kardus : '', '', '', '', '', '', '', '', '']));
-            else rows.push(['ZS-001', 'Zaskia Sungkar', 'Gamis Flowy', 'Hitam', 5, '2 display', 'Menunggu Gudang', '', 'Sesuai', '', '', 'Display', 2, 'K3', 3, '']);
+            let rows = [['Code', 'Brand', 'Nama_Barang', 'Variant', 'Qty_Diminta', 'Kardus', 'Display', 'Qty_Kardus']];
+            if (items.length) items.forEach(i => rows.push([i.code, i.brand, i.product, i.variant, i.original_qty || i.qty_in, '', '', '']));
+            else rows.push(['ZS-001', 'Zaskia Sungkar', 'Gamis Flowy', 'Hitam', 5, 'K3', '2 display', 3]);
             unduhCSV('Template_Packing_' + String(bz).replace(/[^\w\-]+/g, '_') + '.csv', rows.map(r => r.map(csvCell).join(',')).join('\r\n'));
             if (!items.length) UI.alert('Info', 'Tidak ada barang yang menunggu packing di bazaar ini, jadi template berisi 1 baris contoh. Pilih "Semua barang" bila ingin mengedit yang sudah dikemas.', 'info');
         }
@@ -2454,16 +2456,24 @@
             reader.readAsText(fi.files[0]);
         }
 
+        // "2 display", "display 2", atau "2" -> 2
+        function pkAngkaDisplay(raw) {
+            if (raw === '') return { v: null };
+            if (/\d+\s*[.,]\s*\d+/.test(raw)) return { err: `Display "${raw}" harus angka bulat (contoh: 2 display)` };
+            let m = raw.match(/\d+/); if (!m) return { err: `Display "${raw}" tidak ada jumlahnya (contoh: 2 display)` };
+            return { v: parseInt(m[0]) };
+        }
+
         function olahCSVPacking(text) {
             let bz = document.getElementById('upBazaar').value;
             let lines = parseCSV(text.replace(/^\ufeff/, ''));
             let head = (lines[0] || []).map(h => String(h || '').replace(/^\ufeff/, '').toLowerCase().replace(/[^a-z]/g, ''));
             let find = (names) => head.findIndex(h => names.includes(h));
             let col = { code: find(['code', 'kode', 'kodebarang']), status: find(['status', 'statuspacking']), refill: find(['refillhari', 'refill', 'refillday', 'harirefill']),
-                qty: find(['qtydikemas', 'qtyaktual', 'qtykirim', 'qtydikirim']), kd: find(['kardusdisplay']), qd: find(['qtydisplay']),
-                ks: find(['kardusstok', 'kardus', 'kardusstock']), qs: find(['qtystok', 'qtystock']), note: find(['catatan', 'catatangudang']) };
+                qty: find(['qtydikemas', 'qtyaktual', 'qtykirim', 'qtydikirim']), kd: find(['kardusdisplay', 'namakardusdisplay']), qd: find(['display', 'qtydisplay', 'jumlahdisplay']),
+                ks: find(['kardus', 'kardusstok', 'kardusstock', 'namakardus']), qs: find(['qtykardus', 'qtystok', 'qtystock', 'isikardus', 'qtydidalamkardus', 'qtydalamkardus', 'jumlahkardus']), note: find(['catatan', 'catatangudang']) };
             if (col.code === -1 || [col.status, col.refill, col.qty, col.kd, col.qd, col.ks, col.qs].every(c => c === -1)) {
-                resetPreviewPacking(); return UI.alert('Format Tidak Sesuai', 'Kolom "Code" dan kolom isian packing tidak ditemukan di baris pertama. Silakan download template lalu isi sesuai kolomnya.', 'error');
+                resetPreviewPacking(); return UI.alert('Format Tidak Sesuai', 'Kolom "Code" dan kolom isian (Kardus, Display, Qty_Kardus) tidak ditemukan di baris pertama. Silakan download template lalu isi sesuai kolomnya.', 'error');
             }
 
             let byCode = new Map();
@@ -2496,31 +2506,38 @@
                 else if (['kosong', 'tidak dikemas', 'habis', 'tidak ada'].includes(sl)) status = 'Kosong';
                 else { bad(`Status "${stRaw}" tidak dikenali (Sesuai / Refill / Kosong)`); continue; }
 
-                let qty = 0, kardus = '-', ket = '', d = 0, s = 0;
-                if (status === 'Kosong') { ket = 'Kosong / Tidak Ada'; }
-                else {
-                    let Q = toInt(qRaw, 'Qty_Dikemas'), D = toInt(qdRaw, 'Qty_Display'), S = toInt(qsRaw, 'Qty_Stok');
+                let qty = 0, kardus = '-', ket = '', d = 0, s = 0, isKosong = status === 'Kosong';
+                if (!isKosong) {
+                    let Q = toInt(qRaw, 'Qty_Dikemas'), D = pkAngkaDisplay(qdRaw), S = toInt(qsRaw, 'Qty_Kardus');
                     let e = Q.err || D.err || S.err; if (e) { bad(e); continue; }
                     let dName = pkNamaKardus(kdRaw), sName = pkNamaKardus(ksRaw), total, dd = D.v, ss = S.v;
-                    if (Q.v === null && dd === null && ss === null) {
-                        total = item.qty_in;
-                        if (dName && sName) { bad('Isi Qty_Display / Qty_Stok bila memakai dua kardus'); continue; }
-                        if (dName) { dd = total; ss = 0; } else if (sName) { ss = total; dd = 0; } else { bad('Kardus belum diisi'); continue; }
-                    } else if (Q.v !== null) {
+                    if (Q.v !== null) {
                         total = Q.v;
                         if (dd === null && ss === null) {
-                            if (dName && sName) { bad('Isi Qty_Display / Qty_Stok bila memakai dua kardus'); continue; }
-                            if (dName) { dd = total; ss = 0; } else if (sName) { ss = total; dd = 0; } else { bad('Kardus belum diisi'); continue; }
-                        } else if (dd !== null && ss === null) { ss = total - dd; if (ss < 0) { bad(`Qty_Display (${dd}) melebihi Qty_Dikemas (${total})`); continue; } }
-                        else if (ss !== null && dd === null) { dd = total - ss; if (dd < 0) { bad(`Qty_Stok (${ss}) melebihi Qty_Dikemas (${total})`); continue; } }
-                        else if (dd + ss !== total) { bad(`Qty_Display + Qty_Stok (${dd + ss}) tidak sama dengan Qty_Dikemas (${total})`); continue; }
-                    } else { dd = dd || 0; ss = ss || 0; total = dd + ss; }
+                            if (dName && sName) { bad('Isi Display / Qty_Kardus bila memakai dua kardus'); continue; }
+                            if (dName) { dd = total; ss = 0; } else if (sName) { ss = total; dd = 0; } else if (total === 0) { dd = 0; ss = 0; } else { bad('Kardus belum diisi'); continue; }
+                        } else if (dd !== null && ss === null) { ss = total - dd; if (ss < 0) { bad(`Display (${dd}) melebihi Qty_Dikemas (${total})`); continue; } }
+                        else if (ss !== null && dd === null) { dd = total - ss; if (dd < 0) { bad(`Qty_Kardus (${ss}) melebihi Qty_Dikemas (${total})`); continue; } }
+                        else if (dd + ss !== total) { bad(`Display + Qty_Kardus (${dd + ss}) tidak sama dengan Qty_Dikemas (${total})`); continue; }
+                    } else {
+                        if (dd === null && ss === null && !sName && !dName) { bad('Kardus belum diisi'); continue; }
+                        if (dd === null && dName && !sName) dd = item.qty_in;
+                        if (ss === null) {
+                            if (sName) { ss = item.qty_in - (dd || 0); if (ss < 0) { bad(`Display (${dd}) melebihi qty diminta (${item.qty_in})`); continue; } }
+                            else ss = 0;
+                        }
+                        dd = dd || 0; total = dd + ss;
+                    }
                     d = dd; s = ss; qty = total;
-                    if (qty <= 0) { bad('Qty 0 — gunakan Status Kosong bila barang tidak ada'); continue; }
+                    if (qty === 0) { if (status === 'Refill') { bad('Qty 0 tidak bisa berstatus Refill'); continue; } isKosong = true; }
+                }
+                if (isKosong) { qty = 0; kardus = '-'; ket = 'Kosong / Tidak Ada'; status = 'Kosong'; }
+                else {
                     let orig = item.original_qty || item.qty_in;
                     if (qty > orig) { bad(`Melebihi permintaan awal (${orig} pcs)`); continue; }
+                    let dName = pkNamaKardus(kdRaw), sName = pkNamaKardus(ksRaw);
                     if (d > 0) { if (!dName) dName = 'Display'; else if (!/display/i.test(dName)) dName = 'Display ' + dName; }
-                    if (s > 0 && !sName) { bad(`Kardus_Stok kosong (Qty_Stok ${s})`); continue; }
+                    if (s > 0 && !sName) { bad(`Kardus kosong (Qty_Kardus ${s})`); continue; }
                     if (status === 'Refill') { if (!refRaw) { bad('Refill_Hari kosong'); continue; } ket = `Refill Day ${refRaw}`; } else ket = 'Sesuai';
                     kardus = pkBangunKardus(dName, d, sName, s);
                 }
