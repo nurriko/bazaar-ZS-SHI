@@ -195,6 +195,37 @@
         <p class="info-text">Menghubungkan ke Cloud Database Collections...</p>
     </div>
 
+    <!-- MODAL KARDUS -> DISPLAY (SALES) -->
+    <div id="kardusModal" class="modal-overlay">
+        <div class="modal-box" style="text-align:left; max-width:760px; max-height:90vh; overflow-y:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h3 style="margin:0; color:var(--primary);">📦 Keluarkan Kardus ke Display</h3>
+                <button class="btn-secondary" onclick="tutupKardusDisplay()" style="padding:4px 8px; font-size:0.75rem; width:auto;">X</button>
+            </div>
+            <p class="info-text" style="margin-bottom:12px;">Tandai barang dari kardus cadangan yang dikeluarkan menjadi display. Penjualan akan mengurangi stok display lebih dulu.</p>
+            <div class="form-group">
+                <label>1. Pilih kardus</label>
+                <select id="kdSelect" onchange="kdGantiKardus()"></select>
+            </div>
+            <div class="form-group">
+                <label>2. Cara mengeluarkan</label>
+                <label style="font-weight:500; display:flex; gap:8px; align-items:center; margin-bottom:6px;"><input type="radio" name="kdMode" value="utuh" checked onchange="kdGantiMode()"> Satu kardus utuh (semua isinya jadi display)</label>
+                <label style="font-weight:500; display:flex; gap:8px; align-items:center;"><input type="radio" name="kdMode" value="sebagian" onchange="kdGantiMode()"> Pilih barang tertentu saja</label>
+            </div>
+            <div id="kdSearchWrap" class="form-group hidden"><input type="text" id="kdSearch" placeholder="Cari nama baju / kode..." oninput="kdRenderRows()"></div>
+            <div class="table-responsive" style="max-height:300px; overflow:auto;">
+                <table><thead><tr><th style="width:36px;"></th><th>Baju</th><th style="text-align:center;">Di Kardus</th><th style="text-align:center; width:90px;">Qty Keluar</th></tr></thead><tbody id="kdBody"></tbody></table>
+            </div>
+            <div id="kdRingkas" style="margin-top:10px; font-weight:700; font-size:0.85rem; color:var(--primary);"></div>
+            <div style="margin-top:12px;"><button class="btn-secondary" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="kdToggleRiwayat()">📜 Riwayat Pengeluaran</button></div>
+            <div id="kdRiwayat" class="hidden" style="margin-top:10px;"></div>
+            <div class="modal-actions" style="margin-top:15px;">
+                <button class="btn-secondary" onclick="tutupKardusDisplay()">Batal</button>
+                <button id="btnSimpanKardus" class="btn-success" onclick="simpanKardusDisplay()" disabled>Keluarkan ke Display</button>
+            </div>
+        </div>
+    </div>
+
     <!-- MODAL UPLOAD PENJUALAN (SALES) -->
     <div id="jualUploadModal" class="modal-overlay">
         <div class="modal-box" style="text-align:left; max-width:780px; max-height:90vh; overflow-y:auto;">
@@ -604,6 +635,7 @@
                         <h3 id="judulTabelUtama" style="margin: 0;">📊 Stok Berjalan</h3>
                         <div style="display:flex; gap:8px; flex-wrap:wrap;">
                             <button id="btnScanDinamis" class="btn-primary" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="openScanner(currentUser.departemen === 'Sales' ? 'jual' : 'opname')">📷 Scan Aksi Cepat</button>
+                            <button id="btnKardusDisplay" class="btn-info hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="bukaKardusDisplay()">📦 Keluarkan ke Display</button>
                             <button id="btnUploadJual" class="btn-success hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="bukaUploadPenjualan()">⬆️ Upload Penjualan</button>
                             <button id="btnExportPermintaan" class="btn-primary hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="exportExcel('permintaan')">⬇️ Lap. Permintaan</button>
                             <button id="btnExportPenjualan" class="btn-success hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="exportExcel('penjualan')">⬇️ Lap. Penjualan</button>
@@ -2135,6 +2167,206 @@
             }
         }
 
+        // ==========================================
+        // KARDUS -> DISPLAY (lokasi barang di booth)
+        // Data lokasi awal dibaca dari teks kardus hasil packing gudang, perpindahan disimpan di item.pindah_display
+        // ==========================================
+        const kdNorm = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
+        const kdDiterima = (i) => i.status === 'active' && (i.status_pengiriman === 'Diterima Sales' || i.status_pengiriman === 'Diterima Sales (Revisi)');
+
+        function parseKardusItem(item) {
+            let raw = String(item.kardus || '').trim();
+            if (!raw || raw === '-') return [];
+            let parts = raw.split('&').map(p => p.trim()).filter(Boolean);
+            let re = /^(.*?)\s*\(\s*(\d+)\s*pcs\s*\)$/i;
+            let parsed = parts.map(p => { let m = p.match(re); return m ? { name: m[1].trim() || 'Kardus', qty: parseInt(m[2]) } : null; });
+            if (parsed.length && parsed.every(Boolean)) return parsed.map(b => ({ name: b.name, key: kdNorm(b.name), qty: b.qty, isDisplay: /display/i.test(b.name) }));
+            return [{ name: raw, key: kdNorm(raw), qty: item.qty_in || 0, isDisplay: /display/i.test(raw) }];
+        }
+
+        // Hitung posisi barang sekarang: display = sisa stok - total sisa di kardus cadangan
+        function lokasiItem(item) {
+            let aq = item.qty_revisi_sales !== undefined ? item.qty_revisi_sales : item.qty_in;
+            let sisa = Math.max(0, (aq || 0) - (item.qty_sold || 0));
+            let boxes = parseKardusItem(item);
+            let cad = boxes.filter(b => !b.isDisplay).map(b => ({ name: b.name, key: b.key, qty: b.qty }));
+            let dispNames = boxes.filter(b => b.isDisplay).map(b => b.name);
+            (item.pindah_display || []).filter(m => String(m.src || '') === String(item.kardus || '')).forEach(m => {
+                let b = cad.find(x => x.key === m.key); if (b) b.qty = Math.max(0, b.qty - (m.qty || 0));
+            });
+            let ctot = cad.reduce((a, b) => a + b.qty, 0);
+            let overflow = Math.max(0, ctot - sisa), approx = overflow > 0;
+            for (let i = cad.length - 1; i >= 0 && overflow > 0; i--) { let t = Math.min(cad[i].qty, overflow); cad[i].qty -= t; overflow -= t; }
+            let cadAda = cad.filter(b => b.qty > 0);
+            let display = Math.max(0, sisa - cadAda.reduce((a, b) => a + b.qty, 0));
+            return { sisa, display, cad: cadAda, dispNames, approx, hasBoxes: boxes.length > 0 };
+        }
+
+        function lokasiHTML(item) {
+            let l = lokasiItem(item);
+            if (!l.hasBoxes && !(item.pindah_display || []).length) return '';
+            let parts = [];
+            if (l.display === 0 && l.cad.length) parts.push(`<span style="color:var(--danger); font-weight:700;">🏬 Display: 0 ⚠️ habis</span>`);
+            else parts.push(`<span style="color:var(--success); font-weight:700;">🏬 Display: ${l.display}</span>`);
+            l.cad.forEach(b => parts.push(`<span style="color:var(--info);">📦 ${esc(b.name)}: ${b.qty}</span>`));
+            return `<br><span style="font-size:0.75rem;">${parts.join(' · ')}${l.approx ? ' <i>(perkiraan)</i>' : ''}</span>`;
+        }
+
+        function kdMatchFilter(item, k, f) {
+            if (f === '') return true;
+            if (currentUser.departemen !== 'Gudang' && kdDiterima(item)) {
+                let l = lokasiItem(item);
+                if (l.hasBoxes) {
+                    let names = l.cad.map(b => b.name.toLowerCase());
+                    if (l.display > 0) names.push('display', ...l.dispNames.map(n => n.toLowerCase()));
+                    return names.some(n => n.includes(f));
+                }
+            }
+            return String(k).toLowerCase().includes(f);
+        }
+
+        let kdSel = {};          // { docId: qty } untuk mode "pilih barang"
+        let kdBoxRows = [];      // semua barang di kardus terpilih
+
+        function kdBoxMap() {
+            let map = new Map();
+            DB.get('bazaar_items').filter(i => i.bazaar_name === activeBazaarName && kdDiterima(i)).forEach(i => {
+                lokasiItem(i).cad.forEach(b => {
+                    let e = map.get(b.key); if (!e) { e = { key: b.key, name: b.name, total: 0, rows: [] }; map.set(b.key, e); }
+                    e.total += b.qty; e.rows.push({ docId: i._docId, code: i.code, product: i.product, variant: i.variant, brand: i.brand, max: b.qty });
+                });
+            });
+            return map;
+        }
+
+        function bukaKardusDisplay() {
+            if (!activeBazaarName) return UI.alert('Pilih Bazaar', 'Pilih bazaar terlebih dahulu.', 'warning');
+            kdSel = {}; document.querySelector('input[name="kdMode"][value="utuh"]').checked = true;
+            document.getElementById('kdSearch').value = ''; document.getElementById('kdRiwayat').classList.add('hidden');
+            kdIsiPilihanKardus();
+            document.getElementById('kardusModal').classList.add('active');
+        }
+        function tutupKardusDisplay() { document.getElementById('kardusModal').classList.remove('active'); }
+
+        function kdIsiPilihanKardus(keep) {
+            let map = kdBoxMap(); let sel = document.getElementById('kdSelect');
+            let arr = [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'id', { numeric: true }));
+            sel.innerHTML = arr.length ? arr.map(b => `<option value="${esc(b.key)}">${esc(b.name)} — ${b.total} pcs (${b.rows.length} barang)</option>`).join('') : '<option value="">(tidak ada kardus cadangan yang tersisa)</option>';
+            if (keep && map.has(keep)) sel.value = keep;
+            kdGantiKardus();
+        }
+        function kdGantiKardus() { kdSel = {}; kdRenderRows(); }
+        function kdGantiMode() {
+            let utuh = document.querySelector('input[name="kdMode"]:checked').value === 'utuh';
+            document.getElementById('kdSearchWrap').classList.toggle('hidden', utuh);
+            kdSel = {}; kdRenderRows();
+        }
+
+        function kdRenderRows() {
+            let key = document.getElementById('kdSelect').value; let map = kdBoxMap(); let box = map.get(key);
+            let utuh = document.querySelector('input[name="kdMode"]:checked').value === 'utuh';
+            kdBoxRows = box ? box.rows.slice().sort((a, b) => String(a.product || '').localeCompare(String(b.product || '')) || String(a.variant || '').localeCompare(String(b.variant || ''))) : [];
+            let q = kdNorm(document.getElementById('kdSearch').value);
+            let show = utuh || !q ? kdBoxRows : kdBoxRows.filter(r => kdNorm(r.product + ' ' + r.variant + ' ' + r.code + ' ' + r.brand).includes(q));
+            let body = document.getElementById('kdBody');
+            if (!show.length) body.innerHTML = `<tr><td colspan="4" style="text-align:center; padding:15px; color:var(--secondary);">${kdBoxRows.length ? 'Tidak ada barang yang cocok.' : 'Tidak ada isi kardus.'}</td></tr>`;
+            else body.innerHTML = show.map(r => {
+                let checked = utuh || kdSel[r.docId] !== undefined;
+                let qtyVal = utuh ? r.max : (kdSel[r.docId] !== undefined ? kdSel[r.docId] : r.max);
+                return `<tr><td><input type="checkbox" ${checked ? 'checked' : ''} ${utuh ? 'disabled' : ''} onchange="kdCek('${r.docId}', this.checked)"></td>
+                    <td><strong>${esc(r.product)}</strong> ${esc(r.variant)}<br><code>${esc(r.code)}</code></td>
+                    <td align="center">${r.max}</td>
+                    <td><input type="number" min="1" max="${r.max}" value="${qtyVal}" ${utuh || !checked ? 'disabled' : ''} id="kdQty_${r.docId}" oninput="kdUbahQty('${r.docId}', this.value)" style="width:80px;"></td></tr>`;
+            }).join('');
+            kdUpdateRingkas();
+        }
+        function kdCek(docId, on) {
+            let r = kdBoxRows.find(x => x.docId === docId); if (!r) return;
+            if (on) kdSel[docId] = r.max; else delete kdSel[docId];
+            let inp = document.getElementById('kdQty_' + docId); if (inp) { inp.disabled = !on; inp.value = r.max; }
+            kdUpdateRingkas();
+        }
+        function kdUbahQty(docId, v) { if (kdSel[docId] !== undefined) kdSel[docId] = parseInt(v); kdUpdateRingkas(); }
+
+        function kdAmbilPilihan() {
+            let utuh = document.querySelector('input[name="kdMode"]:checked').value === 'utuh';
+            if (utuh) return { utuh, picks: kdBoxRows.map(r => ({ ...r, qty: r.max })), error: '' };
+            let picks = []; let error = '';
+            kdBoxRows.forEach(r => {
+                if (kdSel[r.docId] === undefined) return;
+                let q = kdSel[r.docId];
+                if (isNaN(q) || q <= 0 || q > r.max) error = `Qty ${r.product} ${r.variant} harus 1 sampai ${r.max}.`;
+                picks.push({ ...r, qty: q });
+            });
+            return { utuh, picks, error };
+        }
+        function kdUpdateRingkas() {
+            let { picks, error } = kdAmbilPilihan(); let tot = picks.reduce((a, r) => a + (isNaN(r.qty) ? 0 : r.qty), 0);
+            let el = document.getElementById('kdRingkas'); let btn = document.getElementById('btnSimpanKardus');
+            if (error) { el.style.color = 'var(--danger)'; el.innerText = error; btn.disabled = true; return; }
+            el.style.color = 'var(--primary)';
+            el.innerText = picks.length ? `${picks.length} barang, total ${tot} pcs akan jadi display` : 'Belum ada barang dipilih.';
+            btn.disabled = picks.length === 0;
+        }
+
+        function kdToggleRiwayat() {
+            let box = document.getElementById('kdRiwayat');
+            if (!box.classList.contains('hidden')) return box.classList.add('hidden');
+            let rows = [];
+            DB.get('bazaar_items').filter(i => i.bazaar_name === activeBazaarName).forEach(i => (i.pindah_display || []).forEach(m => rows.push({ i, m })));
+            rows.sort((a, b) => String(b.m.at || '').localeCompare(String(a.m.at || '')));
+            box.innerHTML = rows.length ? `<div class="table-responsive" style="max-height:220px; overflow:auto;"><table><thead><tr><th>Waktu</th><th>Kardus</th><th>Baju</th><th>Qty</th><th>Oleh</th></tr></thead><tbody>` +
+                rows.slice(0, 100).map(({ i, m }) => `<tr><td>${esc(m.at ? new Date(m.at).toLocaleString('id-ID') : '-')}</td><td>${esc(m.box)}${m.mode === 'utuh' ? ' <small>(utuh)</small>' : ''}</td><td>${esc(i.product)} ${esc(i.variant)}<br><code>${esc(i.code)}</code></td><td align="center"><strong>${m.qty}</strong></td><td>${esc(m.by || '-')}</td></tr>`).join('') + `</tbody></table></div>` : '<p class="info-text">Belum ada pengeluaran kardus ke display.</p>';
+            box.classList.remove('hidden');
+        }
+
+        async function simpanKardusDisplay() {
+            let sel = document.getElementById('kdSelect'); let key = sel.value; if (!key) return;
+            let boxName = (kdBoxMap().get(key) || {}).name || key;
+            let { utuh, picks, error } = kdAmbilPilihan();
+            if (error) return UI.alert('Qty Tidak Valid', error, 'error');
+            if (!picks.length) return;
+            let tot = picks.reduce((a, r) => a + r.qty, 0);
+            let yakin = await UI.confirm('Keluarkan ke Display?', `${utuh ? 'Satu kardus utuh' : 'Sebagian isi'} ${boxName}: ${picks.length} barang, total ${tot} pcs akan ditandai sebagai display.`, 'question', 'Ya, Keluarkan', 'Batal');
+            if (!yakin) return;
+
+            let at = new Date().toISOString(); let by = currentUser.username; let mode = utuh ? 'utuh' : 'sebagian'; let saved = 0;
+            showGlobalLoader();
+            try {
+                if (navigator.onLine && window.runTransaction) {
+                    for (let i = 0; i < picks.length; i += 150) {
+                        let chunk = picks.slice(i, i + 150);
+                        await runTx(async (tx) => {
+                            let refs = chunk.map(g => window.doc(db, 'bazaar_items', g.docId));
+                            let snaps = await Promise.all(refs.map(r => tx.get(r)));
+                            snaps.forEach((snap, k) => {
+                                let g = chunk[k];
+                                if (!snap.exists()) throw new Error(`APP:Barang ${g.code} sudah dihapus user lain. Silakan ulangi.`);
+                                let cur = snap.data();
+                                if (!kdDiterima(cur)) throw new Error(`APP:Barang ${g.code} sudah berubah status (diopname / belum diterima). Silakan ulangi.`);
+                                let b = lokasiItem(cur).cad.find(x => x.key === key);
+                                if (!b || b.qty < g.qty) throw new Error(`APP:Isi ${boxName} untuk ${g.code} sekarang tinggal ${b ? b.qty : 0} pcs (berubah karena user lain). Silakan buka ulang dan cek.`);
+                            });
+                            snaps.forEach((snap, k) => {
+                                let cur = snap.data();
+                                tx.update(refs[k], { pindah_display: [...(cur.pindah_display || []), { key, box: boxName, qty: chunk[k].qty, at, by, mode, src: String(cur.kardus || '') }] });
+                            });
+                        });
+                        saved += chunk.length;
+                    }
+                } else {
+                    picks.forEach(g => { let it = getItem(g.docId); WB.update(window.doc(db, 'bazaar_items', g.docId), { pindah_display: [...((it && it.pindah_display) || []), { key, box: boxName, qty: g.qty, at, by, mode, src: String((it && it.kardus) || '') }] }); });
+                    await WB.flush(); saved = picks.length;
+                }
+                logActivity('Kardus ke Display', `${boxName}: ${picks.length} barang (${tot} pcs) dikeluarkan ke display (${mode}) di bazaar ${activeBazaarName}`);
+                hideGlobalLoader(); tutupKardusDisplay();
+                UI.alert('Sukses', `${boxName}: ${picks.length} barang (${tot} pcs) sekarang tercatat sebagai display.`, 'success');
+            } catch (e) {
+                await showWriteError(e);
+                if (saved > 0) UI.alert('Sebagian Tersimpan', `${saved} dari ${picks.length} barang sudah tersimpan sebelum error. Buka ulang jendela ini untuk melihat sisanya.`, 'warning');
+            }
+        }
+
         async function mintaKardusDisplay(id) {
             let item = getItem(id); if(!item) return;
 
@@ -2399,7 +2631,7 @@
                         if(fSStat === 'tidak_dikemas') matchStat = (st === 'Tidak Dikemas');
                         if(fSStat === 'diterima') matchStat = (st === 'Diterima Sales' || st === 'Diterima Sales (Revisi)');
 
-                        if(b.toLowerCase().includes(fSB) && p.toLowerCase().includes(fSP) && (fSK === "" || k.toLowerCase().includes(fSK)) && matchStat) {
+                        if(b.toLowerCase().includes(fSB) && p.toLowerCase().includes(fSP) && kdMatchFilter(item, k, fSK) && matchStat) {
                             filteredItems.push(item);
                         }
                     }
@@ -2465,7 +2697,7 @@
                                 qtyDisplay += `<div style="font-size:0.85rem; font-weight:bold; color:var(--warning); margin-top:4px;">Diterima: ${item.qty_revisi_sales}</div>`;
                             }
 
-                            hS += `<tr class="${tClass}" id="row_s_${item._docId}"><td>${esc(item.bazaar_name)}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${qtyDisplay}</td><td align="center">${item.qty_sold}</td><td align="center"><strong>${sisaSistem}</strong></td><td>${st}${kdText}</td><td><div style="display:flex;flex-direction:column;gap:4px;">${bT}${bJ}${bD}${bO}<button class="btn-danger" style="width:100%;" onclick="hapusBarang('${item._docId}')">Hapus</button></div></td></tr>`;
+                            hS += `<tr class="${tClass}" id="row_s_${item._docId}"><td>${esc(item.bazaar_name)}</td><td>${b}</td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center">${qtyDisplay}</td><td align="center">${item.qty_sold}</td><td align="center"><strong>${sisaSistem}</strong></td><td>${st}${(st === 'Diterima Sales' || st === 'Diterima Sales (Revisi)') && lokasiHTML(item) ? lokasiHTML(item) : kdText}</td><td><div style="display:flex;flex-direction:column;gap:4px;">${bT}${bJ}${bD}${bO}<button class="btn-danger" style="width:100%;" onclick="hapusBarang('${item._docId}')">Hapus</button></div></td></tr>`;
                         }
                     }
                 } else if (isRiwayatTab) {
@@ -2511,6 +2743,7 @@
             document.getElementById('btnExportPenjualan')?.classList.remove('hidden');
             document.getElementById('btnExportSO')?.classList.remove('hidden');
             document.getElementById('btnUploadJual')?.classList.toggle('hidden', currentUser.departemen !== 'Sales');
+            document.getElementById('btnKardusDisplay')?.classList.toggle('hidden', currentUser.departemen !== 'Sales');
             document.getElementById('btnExportSORiwayat')?.classList.remove('hidden');
 
             if(currentUser.departemen === 'Gudang') { 
@@ -3004,7 +3237,22 @@
                     });
                 }
 
-                tableHtml += `</tbody></table></body></html>`;
+                tableHtml += `</tbody></table>`;
+                if (type === 'penjualan') {
+                    let mv = [];
+                    itemsToExport.forEach(it => (it.pindah_display || []).forEach(m => mv.push({ it, m })));
+                    mv.sort((a, b) => String(a.m.at || '').localeCompare(String(b.m.at || '')));
+                    if (mv.length) {
+                        tableHtml += `<br><h3 style="font-family: sans-serif;">Riwayat Pengeluaran Kardus ke Display</h3>
+                        <table border="1" style="border-collapse: collapse; font-family: sans-serif; font-size: 12px;"><thead style="background-color: #0369a1; color: white; font-weight: bold;"><tr>
+                            <th style="padding: 8px;">No</th><th style="padding: 8px;">Waktu</th><th style="padding: 8px;">Brand</th><th style="padding: 8px;">Produk (Baju)</th><th style="padding: 8px;">Variant</th><th style="padding: 8px;">Kode Item</th><th style="padding: 8px;">Dari Kardus</th><th style="padding: 8px;">Qty</th><th style="padding: 8px;">Cara</th><th style="padding: 8px;">Oleh</th></tr></thead><tbody>`;
+                        mv.forEach(({ it, m }, n) => {
+                            tableHtml += `<tr><td style="padding: 5px; text-align: center;">${n + 1}</td><td style="padding: 5px;">${esc(m.at ? new Date(m.at).toLocaleString('id-ID') : '-')}</td><td style="padding: 5px;">${esc(it.brand || '-')}</td><td style="padding: 5px;">${esc(it.product || '-')}</td><td style="padding: 5px;">${esc(it.variant || '-')}</td><td style="padding: 5px; mso-number-format:'\\@';">${esc(it.code || '-')}</td><td style="padding: 5px;">${esc(m.box)}</td><td style="padding: 5px; text-align: center;"><b>${m.qty}</b></td><td style="padding: 5px;">${m.mode === 'utuh' ? 'Kardus utuh' : 'Sebagian'}</td><td style="padding: 5px;">${esc(m.by || '-')}</td></tr>`;
+                        });
+                        tableHtml += `</tbody></table>`;
+                    }
+                }
+                tableHtml += `</body></html>`;
                 
                 let blob = new Blob([tableHtml], { type: 'application/vnd.ms-excel' });
                 let url = URL.createObjectURL(blob);
