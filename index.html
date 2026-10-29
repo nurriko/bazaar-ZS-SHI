@@ -210,6 +210,7 @@
                 • <b>Qty_Kardus</b>: jumlah di dalam kardus. Kosong = otomatis sisa dari qty diminta setelah display.<br>
                 • Barang kosong/tidak ada: isi <code>0</code> di Qty_Kardus (Display dikosongkan).<br>
                 • Nama kardus display otomatis berawalan "Display" agar terbaca oleh fitur Sales.<br>
+                • Kolom <b>Keterangan_Sales</b> &amp; <b>Req_Display</b> hanya informasi permintaan dari Sales (tidak perlu diisi / diubah, diabaikan saat upload).<br>
                 • Opsional: tambah kolom <b>Status</b> (Sesuai/Refill/Kosong), <b>Refill_Hari</b>, dan <b>Catatan</b> bila diperlukan.
             </div>
             <div class="grid-2" style="gap:12px;">
@@ -280,6 +281,27 @@
             <div class="modal-actions" style="margin-top:15px;">
                 <button class="btn-secondary" onclick="tutupUploadPenjualan()">Batal</button>
                 <button id="btnSimpanJual" class="btn-success" onclick="simpanUploadPenjualan()" disabled>Simpan Penjualan</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL EDIT MASTER (SUPERADMIN: SATUAN & MASSAL) -->
+    <div id="masterEditModal" class="modal-overlay">
+        <div class="modal-box" style="text-align:left; max-width:520px; max-height:90vh; overflow-y:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h3 id="meTitle" style="margin:0; color:var(--primary);">✏️ Edit Master</h3>
+                <button class="btn-secondary" onclick="tutupEditMaster()" style="padding:4px 8px; font-size:0.75rem; width:auto;">X</button>
+            </div>
+            <p id="meInfo" class="info-text" style="margin-bottom:12px;"></p>
+            <div class="form-group"><label>Brand</label><input type="text" id="meBrand"></div>
+            <div class="form-group"><label>Baju / Produk</label><input type="text" id="meProduct"></div>
+            <div class="form-group"><label>Variant</label><input type="text" id="meVariant"></div>
+            <div class="form-group"><label>Collection</label><input type="text" id="meCollection"></div>
+            <label style="font-weight:500; display:flex; gap:8px; align-items:flex-start; margin-bottom:6px;"><input type="checkbox" id="meAlsoBazaar" checked style="width:auto; margin-top:3px;"> <span>Ikut perbarui juga barang yang sudah ada di bazaar (stok berjalan &amp; riwayat opname) dengan kode yang sama</span></label>
+            <p class="info-text" style="margin:0;">Kode (Code) tidak bisa diubah karena menjadi kunci data.</p>
+            <div class="modal-actions" style="margin-top:15px;">
+                <button class="btn-secondary" onclick="tutupEditMaster()">Batal</button>
+                <button class="btn-success" onclick="simpanEditMaster()">Simpan Perubahan</button>
             </div>
         </div>
     </div>
@@ -547,9 +569,16 @@
                         </div>
                     </div>
 
-                    <div class="table-responsive" style="margin-top: 20px; max-height: 400px; overflow-y: auto;">
+                    <div class="filter-container" style="margin-top: 20px;">
+                        <span style="font-weight: 600; font-size: 0.85rem;">🔍 Cari:</span>
+                        <input type="text" id="masFilter" class="filter-select" style="max-width:320px;" placeholder="Brand / baju / variant / code / collection..." oninput="masterFilterChange()">
+                        <button class="btn-warning" style="width:auto; padding:9px 14px;" onclick="editMasterTerpilih()">✏️ Edit Massal (Terpilih)</button>
+                        <span id="masSelInfo" style="font-size:0.8rem; font-weight:600; color:var(--primary);"></span>
+                    </div>
+                    <p class="info-text" style="margin:0 0 8px 0;">Centang baris (atau centang kotak paling atas untuk memilih semua hasil pencarian), lalu klik <b>Edit Massal</b>. Untuk satu baris, klik tombol <b>Edit</b> di sebelah kanan.</p>
+                    <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
                         <table>
-                            <thead><tr><th>Brand</th><th>Baju</th><th>Variant</th><th>Code</th><th>Collection</th><th>BTK</th><th>GU</th><th>GREC</th><th>GTOK</th><th>GWEB</th><th style="background-color: var(--success); color: white;">TOTAL</th></tr></thead>
+                            <thead><tr><th style="width:34px;"><input type="checkbox" id="masCheckAll" onchange="masSelectAll(this.checked)" title="Pilih semua hasil pencarian"></th><th>Brand</th><th>Baju</th><th>Variant</th><th>Code</th><th>Collection</th><th>BTK</th><th>GU</th><th>GREC</th><th>GTOK</th><th>GWEB</th><th style="background-color: var(--success); color: white;">TOTAL</th><th>Aksi</th></tr></thead>
                             <tbody id="tableBodyMasterPreview"></tbody>
                         </table>
                     </div>
@@ -657,6 +686,7 @@
                             <option value="belum">⏳ Belum Diproses</option>
                             <option value="sudah">✅ Sudah Diproses</option>
                         </select>
+                        <button class="btn-success" style="width:auto; padding:9px 14px;" onclick="exportFiltered('packing')">⬇️ Download Excel (Sesuai Filter)</button>
                     </div>
 
                     <div class="table-responsive" style="border-radius: 8px; box-shadow: 0 0 0 1px var(--border);">
@@ -691,6 +721,7 @@
                             <option value="tidak_dikemas">❌ Tidak Dikemas</option>
                             <option value="diterima">👍 Diterima Sales</option>
                         </select>
+                        <button class="btn-success" style="width:auto; padding:9px 14px;" onclick="exportFiltered('stok')">⬇️ Download Excel (Sesuai Filter)</button>
                     </div>
                     
                     <div class="table-responsive">
@@ -2440,9 +2471,12 @@
             let items = DB.get('bazaar_items').filter(i => i.bazaar_name === bz && i.status === 'active' && !PK_SUDAH_TERIMA.includes(i.status_pengiriman) &&
                 (semua || (i.status_pengiriman || 'Menunggu Gudang') === 'Menunggu Gudang' || i.status_pengiriman === 'Menunggu Refill Gudang'));
             items.sort((a, b) => String(a.brand || '').localeCompare(String(b.brand || '')) || String(a.product || '').localeCompare(String(b.product || '')) || String(a.code || '').localeCompare(String(b.code || '')));
-            let rows = [['Code', 'Brand', 'Nama_Barang', 'Variant', 'Qty_Diminta', 'Kardus', 'Display', 'Qty_Kardus']];
-            if (items.length) items.forEach(i => rows.push([i.code, i.brand, i.product, i.variant, i.original_qty || i.qty_in, '', '', '']));
-            else rows.push(['ZS-001', 'Zaskia Sungkar', 'Gamis Flowy', 'Hitam', 5, 'K3', '2 display', 3]);
+            let rows = [['Code', 'Brand', 'Nama_Barang', 'Variant', 'Qty_Diminta', 'Keterangan_Sales', 'Req_Display', 'Kardus', 'Display', 'Qty_Kardus']];
+            if (items.length) items.forEach(i => rows.push([i.code, i.brand, i.product, i.variant, i.original_qty || i.qty_in,
+                (i.keterangan_sales && i.keterangan_sales !== '-') ? i.keterangan_sales : '',
+                (i.display_req_qty && i.display_req_qty > 0) ? (i.display_req_qty + ' display' + (i.display_req_type === 'tambahan' ? ' (tambahan stok)' : '')) : '',
+                '', '', '']));
+            else rows.push(['ZS-001', 'Zaskia Sungkar', 'Gamis Flowy', 'Hitam', 5, '2 display', '2 display', 'K3', '2 display', 3]);
             unduhCSV('Template_Packing_' + String(bz).replace(/[^\w\-]+/g, '_') + '.csv', rows.map(r => r.map(csvCell).join(',')).join('\r\n'));
             if (!items.length) UI.alert('Info', 'Tidak ada barang yang menunggu packing di bazaar ini, jadi template berisi 1 baris contoh. Pilih "Semua barang" bila ingin mengedit yang sudah dikemas.', 'info');
         }
@@ -3177,12 +3211,90 @@
                 statEl.innerHTML = inv.length > 0 ? `✅ <strong>${inv.length}</strong> data${date ? ' (' + esc(date) + ')' : ''} &nbsp;•&nbsp; 📦 Total stok di gudang: <strong>${totalGudang.toLocaleString('id-ID')} pcs</strong>` : `❌ Belum ada Master Data`;
             }
             if(tbody) {
-                let limitedInv = inv.slice(0, 50);
-                tbody.innerHTML = limitedInv.map(d => `<tr><td>${esc(d.brand)}</td><td>${esc(d.product)}</td><td>${esc(d.variant)}</td><td><code>${esc(d.code)}</code></td><td>${esc(d.collection)}</td><td>${d.btk}</td><td>${d.gu}</td><td>${d.grec}</td><td>${d.gtok}</td><td>${d.gweb}</td><td>${d.total}</td></tr>`).join('');
-                if (inv.length > 50) {
-                    tbody.innerHTML += `<tr><td colspan="11" style="text-align:center; padding:15px; color:var(--info); background:#eff6ff;">⚠️ Menampilkan 50 dari total ${inv.length} master data. Klik "Download Master Inventory" untuk melihat semuanya.</td></tr>`;
+                const filtered = masterFiltered();
+                const LIMIT = 100;
+                tbody.innerHTML = filtered.slice(0, LIMIT).map(d => `<tr><td><input type="checkbox" data-id="${esc(d._docId)}" ${masSel.has(d._docId) ? 'checked' : ''} onchange="masToggle(this.dataset.id, this.checked)"></td><td>${esc(d.brand)}</td><td>${esc(d.product)}</td><td>${esc(d.variant)}</td><td><code>${esc(d.code)}</code></td><td>${esc(d.collection)}</td><td>${d.btk}</td><td>${d.gu}</td><td>${d.grec}</td><td>${d.gtok}</td><td>${d.gweb}</td><td>${d.total}</td><td><button class="btn-warning" style="padding:4px 10px; font-size:0.75rem;" data-id="${esc(d._docId)}" onclick="editMasterSatu(this.dataset.id)">Edit</button></td></tr>`).join('');
+                if (!filtered.length) tbody.innerHTML = `<tr><td colspan="13" style="text-align:center; padding:15px; color:var(--secondary);">${inv.length ? 'Tidak ada data yang cocok dengan pencarian.' : 'Belum ada Master Data.'}</td></tr>`;
+                else if (filtered.length > LIMIT) {
+                    tbody.innerHTML += `<tr><td colspan="13" style="text-align:center; padding:15px; color:var(--info); background:#eff6ff;">⚠️ Menampilkan ${LIMIT} dari ${filtered.length} data. Persempit pencarian, atau gunakan kotak centang paling atas untuk memilih semua ${filtered.length} hasil. "Download Master Inventory" untuk melihat semuanya.</td></tr>`;
                 }
+                masUpdateSelInfo(filtered);
             }
+        }
+
+        // ==========================================
+        // EDIT MASTER (SUPERADMIN): SATUAN & MASSAL
+        // ==========================================
+        let masSel = new Set(); let masEditIds = [];
+        function masterFiltered() {
+            const q = (document.getElementById('masFilter')?.value || '').trim().toLowerCase();
+            const inv = DB.get('master_inventory');
+            if (!q) return inv;
+            return inv.filter(d => [d.brand, d.product, d.variant, d.code, d.collection].join(' ').toLowerCase().includes(q));
+        }
+        function masUpdateSelInfo(filtered) {
+            filtered = filtered || masterFiltered();
+            const el = document.getElementById('masSelInfo'); if (el) el.innerText = masSel.size ? `${masSel.size} data dipilih` : '';
+            const all = document.getElementById('masCheckAll'); if (all) all.checked = filtered.length > 0 && filtered.every(d => masSel.has(d._docId));
+        }
+        function masterFilterChange() { renderMasterDateStatus(); }
+        function masToggle(id, on) { if (on) masSel.add(id); else masSel.delete(id); masUpdateSelInfo(); }
+        function masSelectAll(on) { masterFiltered().forEach(d => { if (on) masSel.add(d._docId); else masSel.delete(d._docId); }); renderMasterDateStatus(); }
+
+        function bukaEditMaster(ids) {
+            if (!currentUser || currentUser.departemen !== 'Superadmin') return;
+            masEditIds = ids;
+            const single = ids.length === 1 ? DB.get('master_inventory').find(m => m._docId === ids[0]) : null;
+            document.getElementById('meTitle').innerText = single ? '✏️ Edit Master: ' + single.code : `✏️ Edit Massal (${ids.length} data)`;
+            document.getElementById('meInfo').innerText = single ? 'Ubah data yang salah lalu simpan. Kolom yang dikosongkan tidak diubah.' : 'Isi hanya kolom yang ingin diganti untuk semua data terpilih. Kolom yang dikosongkan tidak diubah.';
+            document.getElementById('meBrand').value = single ? (single.brand || '') : '';
+            document.getElementById('meProduct').value = single ? (single.product || '') : '';
+            document.getElementById('meVariant').value = single ? (single.variant || '') : '';
+            document.getElementById('meCollection').value = single ? (single.collection || '') : '';
+            document.getElementById('meAlsoBazaar').checked = true;
+            document.getElementById('masterEditModal').classList.add('active');
+        }
+        function tutupEditMaster() { document.getElementById('masterEditModal').classList.remove('active'); }
+        function editMasterSatu(id) { bukaEditMaster([id]); }
+        function editMasterTerpilih() {
+            const ids = [...masSel].filter(id => DB.get('master_inventory').some(m => m._docId === id));
+            if (!ids.length) return UI.alert('Belum Ada Pilihan', 'Centang dulu data yang ingin diedit (atau cari lalu centang kotak paling atas untuk memilih semua hasil).', 'warning');
+            bukaEditMaster(ids);
+        }
+
+        async function simpanEditMaster() {
+            if (!currentUser || currentUser.departemen !== 'Superadmin') return;
+            const changes = {};
+            const f = { brand: 'meBrand', product: 'meProduct', variant: 'meVariant', collection: 'meCollection' };
+            Object.keys(f).forEach(k => { const v = document.getElementById(f[k]).value.trim(); if (v !== '') changes[k] = v; });
+            const inv = DB.get('master_inventory');
+            const masters = masEditIds.map(id => inv.find(m => m._docId === id)).filter(Boolean);
+            if (!masters.length) { tutupEditMaster(); return UI.alert('Data Berubah', 'Data yang dipilih sudah tidak ada.', 'warning'); }
+            // Hanya kirim perubahan yang benar-benar berbeda
+            const effective = masters.filter(m => Object.keys(changes).some(k => (m[k] || '') !== changes[k]));
+            if (!Object.keys(changes).length || !effective.length) return UI.alert('Tidak Ada Perubahan', 'Tidak ada kolom yang berubah dari data saat ini.', 'info');
+
+            const also = document.getElementById('meAlsoBazaar').checked;
+            const ringkas = Object.keys(changes).map(k => `${k}: "${changes[k]}"`).join(', ');
+            const ok = await UI.confirm('Simpan Perubahan?', `${effective.length} data master akan diubah (${ringkas})${also ? ', termasuk barang di bazaar dengan kode yang sama' : ''}.`, 'question', 'Ya, Simpan', 'Batal');
+            if (!ok) return;
+
+            showGlobalLoader();
+            try {
+                effective.forEach(m => WB.update(window.doc(db, 'master_inventory', m._docId), changes));
+                let nBazaar = 0;
+                if (also) {
+                    const codes = new Set(effective.map(m => String(m.code || '').toLowerCase()));
+                    DB.get('bazaar_items').forEach(i => {
+                        if (codes.has(String(i.code || '').toLowerCase())) { WB.update(window.doc(db, 'bazaar_items', i._docId), changes); nBazaar++; }
+                    });
+                }
+                await WB.flush();
+                logActivity('Edit Master', `Edit ${effective.length} data master (${ringkas})${also ? `, ${nBazaar} barang bazaar ikut diperbarui` : ''}`);
+                masSel.clear();
+                hideGlobalLoader(); tutupEditMaster();
+                UI.alert('Sukses', `${effective.length} data master diperbarui${also ? ` (+ ${nBazaar} barang di bazaar)` : ''}.`, 'success');
+            } catch (e) { showWriteError(e); }
         }
 
         // ==========================================
@@ -3275,6 +3387,105 @@
             setTimeout(() => URL.revokeObjectURL(url), 1500);
             logActivity('Export Master Inventory', `Download master inventory (${rows.length} SKU, total stok gudang ${T.sisa} pcs)`);
         }
+        // ==========================================
+        // DOWNLOAD EXCEL SESUAI FILTER (tab Packing & Stok)
+        // ==========================================
+        function getFilteredBazaarItems(tab) {
+            const val = (id) => (document.getElementById(id)?.value || '').toLowerCase();
+            const isPack = tab === 'packing';
+            const fB = val(isPack ? 'filterGudangBrand' : 'filterSalesBrand');
+            const fP = val(isPack ? 'filterGudangProduct' : 'filterSalesProduct');
+            const fK = val(isPack ? 'filterGudangKardus' : 'filterSalesKardus');
+            const fS = document.getElementById(isPack ? 'filterGudangStatus' : 'filterSalesStatus')?.value || '';
+            const out = [];
+            DB.get('bazaar_items').forEach(item => {
+                if (item.status !== 'active') return;
+                if (currentUser.departemen !== 'Superadmin' && activeBazaarName && item.bazaar_name !== activeBazaarName) return;
+                const b = item.brand || '-', p = item.product || '-', k = item.kardus || '-', st = item.status_pengiriman || 'Menunggu Gudang';
+                let matchStat = true;
+                if (isPack) {
+                    if (fS === 'belum') matchStat = (st === 'Menunggu Gudang' || st === 'Menunggu Refill Gudang');
+                    if (fS === 'sudah') matchStat = (st === 'Dikemas' || st === 'Tidak Dikemas' || st === 'Diterima Sales' || st === 'Diterima Sales (Revisi)');
+                    if (b.toLowerCase().includes(fB) && p.toLowerCase().includes(fP) && (fK === '' || k.toLowerCase().includes(fK)) && matchStat) out.push(item);
+                } else {
+                    if (fS === 'menunggu') matchStat = (st === 'Menunggu Gudang' || st === 'Menunggu Refill Gudang');
+                    if (fS === 'dikemas') matchStat = (st === 'Dikemas');
+                    if (fS === 'tidak_dikemas') matchStat = (st === 'Tidak Dikemas');
+                    if (fS === 'diterima') matchStat = (st === 'Diterima Sales' || st === 'Diterima Sales (Revisi)');
+                    if (b.toLowerCase().includes(fB) && p.toLowerCase().includes(fP) && kdMatchFilter(item, k, fK) && matchStat) out.push(item);
+                }
+            });
+            return out;
+        }
+
+        function lokasiTeks(item) {
+            if (!kdDiterima(item)) return (item.kardus && item.kardus !== '-') ? item.kardus : '-';
+            const l = lokasiItem(item);
+            if (!l.hasBoxes && !(item.pindah_display || []).length) return '-';
+            const parts = ['Display: ' + l.display];
+            l.cad.forEach(b => parts.push(b.name + ': ' + b.qty));
+            return parts.join('; ') + (l.approx ? ' (perkiraan)' : '');
+        }
+
+        function exportFiltered(tab) {
+            if (!currentUser) return;
+            const isPack = tab === 'packing';
+            const items = getFilteredBazaarItems(tab);
+            if (!items.length) return UI.alert('Kosong', 'Tidak ada data yang sesuai dengan filter saat ini.', 'warning');
+            items.sort((a, b) => String(a.bazaar_name || '').localeCompare(String(b.bazaar_name || '')) || String(a.brand || '').localeCompare(String(b.brand || '')) || String(a.product || '').localeCompare(String(b.product || '')) || String(a.code || '').localeCompare(String(b.code || '')));
+
+            const optText = (id) => { const el = document.getElementById(id); return el && el.value ? (el.options ? el.options[el.selectedIndex].text : el.value) : 'Semua'; };
+            const filterDesc = isPack
+                ? `Brand: ${optText('filterGudangBrand')} | Baju: ${document.getElementById('filterGudangProduct').value || 'Semua'} | Kardus: ${optText('filterGudangKardus')} | Status: ${optText('filterGudangStatus')}`
+                : `Brand: ${optText('filterSalesBrand')} | Baju: ${document.getElementById('filterSalesProduct').value || 'Semua'} | Kardus/Lokasi: ${optText('filterSalesKardus')} | Status: ${optText('filterSalesStatus')}`;
+
+            const c = 'padding:5px;', ctr = 'padding:5px; text-align:center;', code = "padding:5px; mso-number-format:'\\@';";
+            const th = (t) => `<th style="padding:10px;">${t}</th>`;
+            const gudang = currentUser.departemen === 'Gudang';
+            let head, body = '';
+
+            if (isPack) {
+                head = ['No', 'Bazaar', 'Brand', 'Produk (Baju)', 'Variant', 'Kode Item', 'Qty Diminta (Sales)', 'Keterangan Sales', 'Req Display', 'Qty Dikirim (Gudang)', 'Status Packing', 'Kardus', 'Catatan Gudang', 'Waktu Request'];
+                items.forEach((i, n) => {
+                    const st = i.status_pengiriman || 'Menunggu Gudang';
+                    const stTxt = (st === 'Menunggu Gudang' || st === 'Menunggu Refill Gudang') ? 'Belum di packing' : st;
+                    body += `<tr><td style="${ctr}">${n + 1}</td><td style="${c}">${esc(i.bazaar_name)}</td><td style="${c}">${esc(i.brand || '-')}</td><td style="${c}">${esc(i.product || '-')}</td><td style="${c}">${esc(i.variant || '-')}</td><td style="${code}">${esc(i.code || '-')}</td>
+                        <td style="${ctr}">${i.original_qty || i.qty_in}</td><td style="${c}">${esc(i.keterangan_sales && i.keterangan_sales !== '-' ? i.keterangan_sales : '-')}</td>
+                        <td style="${ctr}">${i.display_req_qty > 0 ? esc(i.display_req_qty + ' display' + (i.display_req_type === 'tambahan' ? ' (tambahan stok)' : '')) : '-'}</td>
+                        <td style="${ctr}"><b>${i.qty_in}</b></td><td style="${c}">${esc(stTxt)}</td><td style="${c}">${esc(i.kardus && i.kardus !== '-' ? i.kardus : 'Belum ada lokasi kardus')}</td>
+                        <td style="${c}">${esc(i.keterangan_gudang && i.keterangan_gudang !== '-' ? i.keterangan_gudang : '-')}</td><td style="${c}">${esc(i.req_date || '-')}</td></tr>`;
+                });
+            } else if (gudang) {
+                head = ['No', 'Bazaar', 'Brand', 'Produk (Baju)', 'Variant', 'Kode Item', 'Sisa Sistem', 'Status'];
+                items.forEach((i, n) => {
+                    const aq = i.qty_revisi_sales !== undefined ? i.qty_revisi_sales : i.qty_in;
+                    body += `<tr><td style="${ctr}">${n + 1}</td><td style="${c}">${esc(i.bazaar_name)}</td><td style="${c}">${esc(i.brand || '-')}</td><td style="${c}">${esc(i.product || '-')}</td><td style="${c}">${esc(i.variant || '-')}</td><td style="${code}">${esc(i.code || '-')}</td><td style="${ctr}"><b>${aq - i.qty_sold}</b></td><td style="${c}">${esc(i.status_pengiriman || 'Menunggu Gudang')}</td></tr>`;
+                });
+            } else {
+                head = ['No', 'Bazaar', 'Brand', 'Produk (Baju)', 'Variant', 'Kode Item', 'Qty Diminta', 'Dikirim Gudang', 'Diterima Sales', 'Terjual', 'Sisa', 'Status', 'Lokasi / Kardus', 'Keterangan Sales'];
+                items.forEach((i, n) => {
+                    const aq = i.qty_revisi_sales !== undefined ? i.qty_revisi_sales : i.qty_in;
+                    body += `<tr><td style="${ctr}">${n + 1}</td><td style="${c}">${esc(i.bazaar_name)}</td><td style="${c}">${esc(i.brand || '-')}</td><td style="${c}">${esc(i.product || '-')}</td><td style="${c}">${esc(i.variant || '-')}</td><td style="${code}">${esc(i.code || '-')}</td>
+                        <td style="${ctr}">${i.original_qty || i.qty_in}</td><td style="${ctr}">${i.qty_in}</td><td style="${ctr}">${i.qty_revisi_sales !== undefined ? i.qty_revisi_sales : '-'}</td><td style="${ctr}">${i.qty_sold}</td><td style="${ctr}"><b>${aq - i.qty_sold}</b></td>
+                        <td style="${c}">${esc(i.status_pengiriman || 'Menunggu Gudang')}</td><td style="${c}">${esc(lokasiTeks(i))}</td><td style="${c}">${esc(i.keterangan_sales && i.keterangan_sales !== '-' ? i.keterangan_sales : '-')}</td></tr>`;
+                });
+            }
+
+            const judul = isPack ? 'Tugas Packing (Sesuai Filter)' : 'Stok Berjalan (Sesuai Filter)';
+            const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="UTF-8">
+                <!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>Data Filter</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]--></head><body>
+                <h2 style="font-family:sans-serif;">${judul}</h2>
+                <p style="font-family:sans-serif;"><b>Bazaar:</b> ${esc(activeBazaarName || 'Semua Bazaar')}<br><b>Filter:</b> ${esc(filterDesc)}<br><b>Jumlah Data:</b> ${items.length}<br><b>Waktu Download:</b> ${esc(new Date().toLocaleString('id-ID'))}</p>
+                <table border="1" style="border-collapse:collapse; font-family:sans-serif; font-size:12px;"><thead style="background-color:#4338ca; color:white; font-weight:bold;"><tr>${head.map(th).join('')}</tr></thead><tbody>${body}</tbody></table></body></html>`;
+
+            const blob = new Blob(['\ufeff' + html], { type: 'application/vnd.ms-excel;charset=utf-8' });
+            const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+            a.download = `Filter_${isPack ? 'PACKING' : 'STOK'}_${String(activeBazaarName || 'Semua').replace(/[^a-zA-Z0-9]/g, '_')}_${new Date().toISOString().split('T')[0]}.xls`;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+            logActivity('Export Excel Filter', `Download ${items.length} data (${isPack ? 'packing' : 'stok'}) sesuai filter - ${filterDesc}`);
+        }
+
         // ==========================================
         // FITUR EXPORT LAPORAN EXCEL
         // ==========================================
