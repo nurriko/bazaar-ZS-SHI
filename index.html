@@ -306,6 +306,29 @@
         </div>
     </div>
 
+    <!-- MODAL EDIT BARANG PERMINTAAN (SUPERADMIN) -->
+    <div id="itemEditModal" class="modal-overlay">
+        <div class="modal-box" style="text-align:left; max-width:520px; max-height:90vh; overflow-y:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h3 id="ieTitle" style="margin:0; color:var(--primary);">✏️ Edit Barang Permintaan</h3>
+                <button class="btn-secondary" onclick="tutupEditItem()" style="padding:4px 8px; font-size:0.75rem; width:auto;">X</button>
+            </div>
+            <p id="ieInfo" class="info-text" style="margin-bottom:12px;"></p>
+            <div class="form-group"><label>Brand</label><input type="text" id="ieBrand"></div>
+            <div class="form-group"><label>Baju / Produk</label><input type="text" id="ieProduct"></div>
+            <div class="form-group"><label>Variant</label><input type="text" id="ieVariant"></div>
+            <div class="form-group"><label>Collection</label><input type="text" id="ieCollection"></div>
+            <div class="form-group"><label>Keterangan Sales</label><input type="text" id="ieKet" placeholder="Contoh: 2 display"></div>
+            <div id="ieKetClearWrap" class="hidden"><label style="font-weight:500; display:flex; gap:8px; align-items:center; margin-bottom:8px;"><input type="checkbox" id="ieKetClear" style="width:auto;"> Kosongkan Keterangan Sales</label></div>
+            <label style="font-weight:500; display:flex; gap:8px; align-items:flex-start; margin-bottom:6px;"><input type="checkbox" id="ieAlsoMaster" style="width:auto; margin-top:3px;"> <span>Ikut perbarui juga Master Inventory (kode yang sama) untuk Brand / Baju / Variant / Collection</span></label>
+            <p class="info-text" style="margin:0;">Kode, qty, dan status tidak diubah di sini. Kolom yang dikosongkan tidak diubah.</p>
+            <div class="modal-actions" style="margin-top:15px;">
+                <button class="btn-secondary" onclick="tutupEditItem()">Batal</button>
+                <button class="btn-success" onclick="simpanEditItem()">Simpan Perubahan</button>
+            </div>
+        </div>
+    </div>
+
     <!-- UI ALERT & PROMPT MODAL -->
     <div id="sysModal" class="modal-overlay">
         <div class="modal-box">
@@ -687,6 +710,7 @@
                             <option value="sudah">✅ Sudah Diproses</option>
                         </select>
                         <button class="btn-success" style="width:auto; padding:9px 14px;" onclick="exportFiltered('packing')">⬇️ Download Excel (Sesuai Filter)</button>
+                        <button id="btnEditMassalPack" class="btn-warning hidden" style="width:auto; padding:9px 14px;" onclick="editItemFilter('packing')">✏️ Edit Massal (Sesuai Filter)</button>
                     </div>
 
                     <div class="table-responsive" style="border-radius: 8px; box-shadow: 0 0 0 1px var(--border);">
@@ -722,6 +746,7 @@
                             <option value="diterima">👍 Diterima Sales</option>
                         </select>
                         <button class="btn-success" style="width:auto; padding:9px 14px;" onclick="exportFiltered('stok')">⬇️ Download Excel (Sesuai Filter)</button>
+                        <button id="btnEditMassalStok" class="btn-warning hidden" style="width:auto; padding:9px 14px;" onclick="editItemFilter('stok')">✏️ Edit Massal (Sesuai Filter)</button>
                     </div>
                     
                     <div class="table-responsive">
@@ -2966,7 +2991,7 @@
                         if (item.qty_revisi_sales !== undefined && item.qty_revisi_sales !== item.qty_in) {
                             qtyGudangDisplay = `<span style="text-decoration:line-through; color:var(--danger);">${item.qty_in}</span><br><span style="color:var(--warning); font-size:1.1rem; font-weight:bold;">Revisi: ${item.qty_revisi_sales}</span>`;
                         }
-                        hSK += `<tr class="${tClass}" id="row_sk_${item._docId}"><td><strong>${b}</strong></td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center"><strong>${orig} pcs</strong>${ketSalesTxt}</td><td align="center">${qtyGudangDisplay}</td><td>${bdg}<br><small>${kg}</small>${kdText}</td><td><button class="btn-info" onclick="openPackingModal('${item._docId}')">Kemas/Edit</button></td></tr>`;
+                        hSK += `<tr class="${tClass}" id="row_sk_${item._docId}"><td><strong>${b}</strong></td><td>${p}</td><td>${v}</td><td><code>${c}</code></td><td align="center"><strong>${orig} pcs</strong>${ketSalesTxt}</td><td align="center">${qtyGudangDisplay}</td><td>${bdg}<br><small>${kg}</small>${kdText}</td><td><button class="btn-info" onclick="openPackingModal('${item._docId}')">Kemas/Edit</button>${currentUser.departemen === 'Superadmin' ? `<button class="btn-secondary" style="margin-top:4px;" onclick="editItemSatu('${item._docId}')">✏️ Edit Data</button>` : ''}</td></tr>`;
                     }
                     if (isStokTab) {
                         if(currentUser.departemen === 'Gudang') {
@@ -2979,7 +3004,7 @@
                             }
                             
                             let bJ = (st === 'Diterima Sales' || st === 'Diterima Sales (Revisi)') ? `<button class="btn-success" style="width:100%; margin-bottom:5px;" onclick="catatPenjualan('${item._docId}')">💸 Jual</button>` : '';
-                            let bO = currentUser.departemen === 'Superadmin' ? `<button class="btn-warning" style="width:100%; margin-bottom:5px;" onclick="stockOpname('${item._docId}')">📋 Opname</button>` : '';
+                            let bO = currentUser.departemen === 'Superadmin' ? `<button class="btn-warning" style="width:100%; margin-bottom:5px;" onclick="stockOpname('${item._docId}')">📋 Opname</button><button class="btn-secondary" style="width:100%; margin-bottom:5px;" onclick="editItemSatu('${item._docId}')">✏️ Edit Data</button>` : '';
                             
                             let bD = '';
                             if (item.display_req_qty && item.display_req_qty > 0) {
@@ -3043,6 +3068,8 @@
             document.getElementById('btnExportSO')?.classList.remove('hidden');
             document.getElementById('btnUploadJual')?.classList.toggle('hidden', currentUser.departemen !== 'Sales');
             document.getElementById('btnKardusDisplay')?.classList.toggle('hidden', currentUser.departemen !== 'Sales');
+            document.getElementById('btnEditMassalPack')?.classList.toggle('hidden', currentUser.departemen !== 'Superadmin');
+            document.getElementById('btnEditMassalStok')?.classList.toggle('hidden', currentUser.departemen !== 'Superadmin');
             document.getElementById('btnUploadPacking')?.classList.toggle('hidden', !(currentUser.departemen === 'Gudang' || currentUser.departemen === 'Superadmin'));
             document.getElementById('btnExportSORiwayat')?.classList.remove('hidden');
 
@@ -3220,6 +3247,73 @@
                 }
                 masUpdateSelInfo(filtered);
             }
+        }
+
+        // ==========================================
+        // EDIT BARANG PERMINTAAN SALES (SUPERADMIN): SATUAN & MASSAL
+        // ==========================================
+        let itemEditIds = [];
+        function bukaEditItem(ids) {
+            if (!currentUser || currentUser.departemen !== 'Superadmin') return;
+            itemEditIds = ids;
+            const single = ids.length === 1 ? getItem(ids[0]) : null;
+            document.getElementById('ieTitle').innerText = single ? '✏️ Edit: ' + single.code : `✏️ Edit Massal (${ids.length} barang)`;
+            document.getElementById('ieInfo').innerText = single ? 'Ubah data permintaan yang salah lalu simpan.' : 'Isi hanya kolom yang ingin diganti; berlaku untuk semua barang sesuai filter saat ini.';
+            document.getElementById('ieBrand').value = single ? (single.brand || '') : '';
+            document.getElementById('ieProduct').value = single ? (single.product || '') : '';
+            document.getElementById('ieVariant').value = single ? (single.variant || '') : '';
+            document.getElementById('ieCollection').value = single ? (single.collection || '') : '';
+            document.getElementById('ieKet').value = single ? ((single.keterangan_sales && single.keterangan_sales !== '-') ? single.keterangan_sales : '') : '';
+            document.getElementById('ieKetClear').checked = false;
+            document.getElementById('ieKetClearWrap').classList.toggle('hidden', !!single);
+            document.getElementById('ieAlsoMaster').checked = false;
+            document.getElementById('itemEditModal').classList.add('active');
+        }
+        function tutupEditItem() { document.getElementById('itemEditModal').classList.remove('active'); }
+        function editItemSatu(id) { bukaEditItem([id]); }
+        function editItemFilter(tab) {
+            const items = getFilteredBazaarItems(tab);
+            if (!items.length) return UI.alert('Kosong', 'Tidak ada barang yang sesuai dengan filter saat ini.', 'warning');
+            bukaEditItem(items.map(i => i._docId));
+        }
+
+        async function simpanEditItem() {
+            if (!currentUser || currentUser.departemen !== 'Superadmin') return;
+            const single = itemEditIds.length === 1;
+            const changes = {};
+            const f = { brand: 'ieBrand', product: 'ieProduct', variant: 'ieVariant', collection: 'ieCollection' };
+            Object.keys(f).forEach(k => { const v = document.getElementById(f[k]).value.trim(); if (v !== '') changes[k] = v; });
+            const ket = document.getElementById('ieKet').value.trim();
+            const clearKet = !single && document.getElementById('ieKetClear').checked;
+            const kolomMaster = { ...changes };
+            if (ket !== '') changes.keterangan_sales = ket; else if (clearKet) changes.keterangan_sales = '-';
+            // Satuan: mengosongkan Keterangan Sales dianggap menghapus keterangan
+            const items = itemEditIds.map(id => getItem(id)).filter(Boolean);
+            if (!items.length) { tutupEditItem(); return UI.alert('Data Berubah', 'Barang yang dipilih sudah tidak ada.', 'warning'); }
+            if (single && ket === '' && items[0].keterangan_sales && items[0].keterangan_sales !== '-') changes.keterangan_sales = '-';
+            if (!Object.keys(changes).length) return UI.alert('Tidak Ada Perubahan', 'Isi minimal satu kolom yang ingin diubah.', 'info');
+            const effective = items.filter(i => Object.keys(changes).some(k => (k === 'keterangan_sales' ? (i[k] || '-') : (i[k] || '')) !== changes[k]));
+            if (!effective.length) return UI.alert('Tidak Ada Perubahan', 'Data sudah sama dengan yang Anda isi.', 'info');
+
+            const alsoMaster = document.getElementById('ieAlsoMaster').checked && Object.keys(kolomMaster).length > 0;
+            const ringkas = Object.keys(changes).map(k => `${k}: "${changes[k]}"`).join(', ');
+            const ok = await UI.confirm('Simpan Perubahan?', `${effective.length} barang permintaan akan diubah (${ringkas})${alsoMaster ? ', dan Master Inventory dengan kode yang sama ikut diperbarui' : ''}.`, 'question', 'Ya, Simpan', 'Batal');
+            if (!ok) return;
+
+            showGlobalLoader();
+            try {
+                effective.forEach(i => WB.update(window.doc(db, 'bazaar_items', i._docId), changes));
+                let nMaster = 0;
+                if (alsoMaster) {
+                    const seen = new Set();
+                    effective.forEach(i => { const m = getMaster(i.code); if (m && !seen.has(m._docId)) { seen.add(m._docId); WB.update(window.doc(db, 'master_inventory', m._docId), kolomMaster); nMaster++; } });
+                }
+                await WB.flush();
+                effective.forEach(i => patchLocalItem(i._docId, changes));
+                logActivity('Edit Barang Permintaan', `Edit ${effective.length} barang permintaan (${ringkas})${alsoMaster ? `, ${nMaster} master ikut diperbarui` : ''}`);
+                hideGlobalLoader(); tutupEditItem(); renderTablesBazaar();
+                UI.alert('Sukses', `${effective.length} barang permintaan diperbarui${alsoMaster ? ` (+ ${nMaster} master)` : ''}.`, 'success');
+            } catch (e) { showWriteError(e); }
         }
 
         // ==========================================
