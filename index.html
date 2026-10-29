@@ -195,6 +195,38 @@
         <p class="info-text">Menghubungkan ke Cloud Database Collections...</p>
     </div>
 
+    <!-- MODAL UPLOAD PACKING & KARDUS (GUDANG) -->
+    <div id="packUploadModal" class="modal-overlay">
+        <div class="modal-box" style="text-align:left; max-width:860px; max-height:90vh; overflow-y:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h3 style="margin:0; color:var(--primary);">⬆️ Upload Packing & Keterangan Kardus (CSV)</h3>
+                <button class="btn-secondary" onclick="tutupUploadPacking()" style="padding:4px 8px; font-size:0.75rem; width:auto;">X</button>
+            </div>
+            <p class="info-text" style="margin-bottom:10px;">Isi packing banyak barang sekaligus. Download template (sudah berisi daftar barang), isi kolom di sebelah kanan, lalu upload. Baris yang kolom isiannya kosong semua akan diabaikan.</p>
+            <div style="background:#f8fafc; border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:0.78rem; color:#475569; line-height:1.55;">
+                <b>Cara mengisi:</b><br>
+                • <b>Status</b>: <code>Sesuai</code> (default), <code>Refill</code> (isi <b>Refill_Hari</b>), atau <code>Kosong</code>.<br>
+                • Satu kardus: isi <b>Kardus_Stok</b> saja (Qty_Dikemas boleh kosong, otomatis = qty diminta).<br>
+                • Pisah display &amp; stok: isi <b>Qty_Display</b> + <b>Kardus_Display</b> (kosong = "Display") dan <b>Kardus_Stok</b>; Qty_Stok otomatis sisanya bila <b>Qty_Dikemas</b> diisi.<br>
+                • Nama kardus display otomatis diawali kata "Display" agar terbaca oleh fitur Sales.
+            </div>
+            <div class="grid-2" style="gap:12px;">
+                <div class="form-group"><label>Bazaar</label><select id="upBazaar" onchange="bacaFilePacking()"></select></div>
+                <div class="form-group"><label>Isi template dengan</label>
+                    <select id="upTplScope"><option value="belum">Barang yang belum dikemas</option><option value="semua">Semua barang (termasuk yang sudah dikemas)</option></select></div>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+                <button class="btn-primary" style="width:auto; padding:8px 14px; font-size:0.8rem;" onclick="downloadTemplatePacking()">⬇️ Download Template</button>
+            </div>
+            <div class="form-group"><label>Pilih file CSV</label><input type="file" id="filePack" accept=".csv,text/csv" onchange="bacaFilePacking()"></div>
+            <div id="packPreview" class="hidden"></div>
+            <div class="modal-actions" style="margin-top:15px;">
+                <button class="btn-secondary" onclick="tutupUploadPacking()">Batal</button>
+                <button id="btnSimpanPack" class="btn-success" onclick="simpanUploadPacking()" disabled>Simpan Packing</button>
+            </div>
+        </div>
+    </div>
+
     <!-- MODAL KARDUS -> DISPLAY (SALES) -->
     <div id="kardusModal" class="modal-overlay">
         <div class="modal-box" style="text-align:left; max-width:760px; max-height:90vh; overflow-y:auto;">
@@ -607,6 +639,7 @@
                         <h3 style="margin: 0;">📦 Tugas Persiapan Packing (Gudang)</h3>
                         <div style="display:flex; gap:8px; flex-wrap:wrap;">
                             <button class="btn-info" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="openScanner('kemas')">📷 Scan Kemas Cepat</button>
+                            <button id="btnUploadPacking" class="btn-success hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="bukaUploadPacking()">⬆️ Upload Packing & Kardus</button>
                             <button id="btnExportPermintaanKemas" class="btn-primary hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="exportExcel('permintaan')">⬇️ Lap. Permintaan</button>
                             <button id="btnExportPenjualanKemas" class="btn-success hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="exportExcel('penjualan')">⬇️ Lap. Penjualan</button>
                         </div>
@@ -2367,6 +2400,221 @@
             }
         }
 
+        // ==========================================
+        // UPLOAD PACKING & KARDUS MASSAL (CSV) - Gudang
+        // Aturan sama dengan form "Kemas/Edit" per barang (savePacking)
+        // ==========================================
+        let pendingPackRows = [];
+        const PK_SUDAH_TERIMA = ['Diterima Sales', 'Diterima Sales (Revisi)'];
+
+        function pkBazaarOptions() {
+            if (activeBazaarName) return [activeBazaarName];
+            let set = new Set(); DB.get('bazaar_items').forEach(i => { if (i.status === 'active' && i.bazaar_name) set.add(i.bazaar_name); });
+            return [...set].sort();
+        }
+        function pkNamaKardus(v) { return String(v || '').replace(/[&()]/g, ' ').replace(/\s+/g, ' ').trim(); }
+        function pkBangunKardus(dName, d, sName, s) {
+            if (d > 0 && s > 0) return `${dName} (${d}pcs) & ${sName} (${s}pcs)`;
+            if (d > 0) return `${dName} (${d}pcs)`;
+            return sName;
+        }
+
+        function bukaUploadPacking() {
+            let opts = pkBazaarOptions();
+            if (!opts.length) return UI.alert('Tidak Ada Bazaar', 'Belum ada bazaar dengan barang aktif.', 'warning');
+            let sel = document.getElementById('upBazaar');
+            sel.innerHTML = opts.map(b => `<option value="${esc(b)}">${esc(b)}</option>`).join('');
+            sel.disabled = opts.length === 1;
+            document.getElementById('filePack').value = '';
+            resetPreviewPacking();
+            document.getElementById('packUploadModal').classList.add('active');
+        }
+        function tutupUploadPacking() { document.getElementById('packUploadModal').classList.remove('active'); resetPreviewPacking(); document.getElementById('filePack').value = ''; }
+        function resetPreviewPacking() { pendingPackRows = []; let b = document.getElementById('packPreview'); b.classList.add('hidden'); b.innerHTML = ''; let btn = document.getElementById('btnSimpanPack'); btn.disabled = true; btn.innerText = 'Simpan Packing'; }
+
+        function downloadTemplatePacking() {
+            let bz = document.getElementById('upBazaar').value; if (!bz) return;
+            let semua = document.getElementById('upTplScope').value === 'semua';
+            let items = DB.get('bazaar_items').filter(i => i.bazaar_name === bz && i.status === 'active' && !PK_SUDAH_TERIMA.includes(i.status_pengiriman) &&
+                (semua || (i.status_pengiriman || 'Menunggu Gudang') === 'Menunggu Gudang' || i.status_pengiriman === 'Menunggu Refill Gudang'));
+            items.sort((a, b) => String(a.brand || '').localeCompare(String(b.brand || '')) || String(a.product || '').localeCompare(String(b.product || '')) || String(a.code || '').localeCompare(String(b.code || '')));
+            let rows = [['Code', 'Brand', 'Product', 'Variant', 'Qty_Diminta', 'Ket_Sales', 'Status_Saat_Ini', 'Kardus_Saat_Ini', 'Status', 'Refill_Hari', 'Qty_Dikemas', 'Kardus_Display', 'Qty_Display', 'Kardus_Stok', 'Qty_Stok', 'Catatan']];
+            if (items.length) items.forEach(i => rows.push([i.code, i.brand, i.product, i.variant, i.original_qty || i.qty_in, (i.keterangan_sales && i.keterangan_sales !== '-') ? i.keterangan_sales : '', i.status_pengiriman || 'Menunggu Gudang', (i.kardus && i.kardus !== '-') ? i.kardus : '', '', '', '', '', '', '', '', '']));
+            else rows.push(['ZS-001', 'Zaskia Sungkar', 'Gamis Flowy', 'Hitam', 5, '2 display', 'Menunggu Gudang', '', 'Sesuai', '', '', 'Display', 2, 'K3', 3, '']);
+            unduhCSV('Template_Packing_' + String(bz).replace(/[^\w\-]+/g, '_') + '.csv', rows.map(r => r.map(csvCell).join(',')).join('\r\n'));
+            if (!items.length) UI.alert('Info', 'Tidak ada barang yang menunggu packing di bazaar ini, jadi template berisi 1 baris contoh. Pilih "Semua barang" bila ingin mengedit yang sudah dikemas.', 'info');
+        }
+
+        function bacaFilePacking() {
+            let fi = document.getElementById('filePack');
+            if (!fi.files.length) return resetPreviewPacking();
+            let reader = new FileReader();
+            reader.onload = (e) => { try { olahCSVPacking(String(e.target.result || '')); } catch (err) { console.error(err); resetPreviewPacking(); UI.alert('Gagal Membaca', 'File tidak bisa dibaca. Pastikan formatnya CSV sesuai template.', 'error'); } };
+            reader.onerror = () => UI.alert('Gagal Membaca', 'File tidak bisa dibuka.', 'error');
+            reader.readAsText(fi.files[0]);
+        }
+
+        function olahCSVPacking(text) {
+            let bz = document.getElementById('upBazaar').value;
+            let lines = parseCSV(text.replace(/^\ufeff/, ''));
+            let head = (lines[0] || []).map(h => String(h || '').replace(/^\ufeff/, '').toLowerCase().replace(/[^a-z]/g, ''));
+            let find = (names) => head.findIndex(h => names.includes(h));
+            let col = { code: find(['code', 'kode', 'kodebarang']), status: find(['status', 'statuspacking']), refill: find(['refillhari', 'refill', 'refillday', 'harirefill']),
+                qty: find(['qtydikemas', 'qtyaktual', 'qtykirim', 'qtydikirim']), kd: find(['kardusdisplay']), qd: find(['qtydisplay']),
+                ks: find(['kardusstok', 'kardus', 'kardusstock']), qs: find(['qtystok', 'qtystock']), note: find(['catatan', 'catatangudang']) };
+            if (col.code === -1 || [col.status, col.refill, col.qty, col.kd, col.qd, col.ks, col.qs].every(c => c === -1)) {
+                resetPreviewPacking(); return UI.alert('Format Tidak Sesuai', 'Kolom "Code" dan kolom isian packing tidak ditemukan di baris pertama. Silakan download template lalu isi sesuai kolomnya.', 'error');
+            }
+
+            let byCode = new Map();
+            DB.get('bazaar_items').filter(i => i.bazaar_name === bz).forEach(i => {
+                let k = String(i.code || '').trim().toLowerCase(); let cur = byCode.get(k);
+                if (!cur || (i.status === 'active' && cur.status !== 'active')) byCode.set(k, i);
+            });
+            let mAvail = new Map(); let seen = new Set(); let rows = []; let kosong = 0;
+            const toInt = (raw, label) => { if (raw === '') return { v: null }; let t = raw.replace(/\.0+$/, ''); if (!/^\d+$/.test(t)) return { err: `${label} "${raw}" harus angka bulat ≥ 0` }; return { v: parseInt(t) }; };
+
+            for (let r = 1; r < lines.length; r++) {
+                let cols = lines[r] || []; let cell = (idx) => idx === -1 ? '' : String(cols[idx] ?? '').trim();
+                let code = cell(col.code), stRaw = cell(col.status), refRaw = cell(col.refill), qRaw = cell(col.qty), kdRaw = cell(col.kd), qdRaw = cell(col.qd), ksRaw = cell(col.ks), qsRaw = cell(col.qs), noteRaw = cell(col.note);
+                if (!code) continue;
+                if (!stRaw && !refRaw && !qRaw && !kdRaw && !qdRaw && !ksRaw && !qsRaw) { kosong++; continue; }
+                let row = { line: r + 1, code, ok: false, reason: '', item: null };
+                const bad = (msg) => { row.reason = msg; rows.push(row); };
+                let key = code.toLowerCase();
+                if (seen.has(key)) { bad('Code muncul lebih dari sekali di file'); continue; }
+                seen.add(key);
+                let item = byCode.get(key);
+                if (!item) { bad('Code tidak ada di bazaar ini'); continue; }
+                row.item = item;
+                if (item.status !== 'active') { bad('Barang sudah diopname'); continue; }
+                if (PK_SUDAH_TERIMA.includes(item.status_pengiriman)) { bad('Sudah diterima Sales — ubah lewat tombol Kemas/Edit'); continue; }
+
+                let sl = stRaw.toLowerCase(), status;
+                if (['', 'sesuai', 'ok', 'dikemas', 'kemas'].includes(sl)) status = (sl === '' && refRaw) ? 'Refill' : 'Sesuai';
+                else if (sl === 'refill') status = 'Refill';
+                else if (['kosong', 'tidak dikemas', 'habis', 'tidak ada'].includes(sl)) status = 'Kosong';
+                else { bad(`Status "${stRaw}" tidak dikenali (Sesuai / Refill / Kosong)`); continue; }
+
+                let qty = 0, kardus = '-', ket = '', d = 0, s = 0;
+                if (status === 'Kosong') { ket = 'Kosong / Tidak Ada'; }
+                else {
+                    let Q = toInt(qRaw, 'Qty_Dikemas'), D = toInt(qdRaw, 'Qty_Display'), S = toInt(qsRaw, 'Qty_Stok');
+                    let e = Q.err || D.err || S.err; if (e) { bad(e); continue; }
+                    let dName = pkNamaKardus(kdRaw), sName = pkNamaKardus(ksRaw), total, dd = D.v, ss = S.v;
+                    if (Q.v === null && dd === null && ss === null) {
+                        total = item.qty_in;
+                        if (dName && sName) { bad('Isi Qty_Display / Qty_Stok bila memakai dua kardus'); continue; }
+                        if (dName) { dd = total; ss = 0; } else if (sName) { ss = total; dd = 0; } else { bad('Kardus belum diisi'); continue; }
+                    } else if (Q.v !== null) {
+                        total = Q.v;
+                        if (dd === null && ss === null) {
+                            if (dName && sName) { bad('Isi Qty_Display / Qty_Stok bila memakai dua kardus'); continue; }
+                            if (dName) { dd = total; ss = 0; } else if (sName) { ss = total; dd = 0; } else { bad('Kardus belum diisi'); continue; }
+                        } else if (dd !== null && ss === null) { ss = total - dd; if (ss < 0) { bad(`Qty_Display (${dd}) melebihi Qty_Dikemas (${total})`); continue; } }
+                        else if (ss !== null && dd === null) { dd = total - ss; if (dd < 0) { bad(`Qty_Stok (${ss}) melebihi Qty_Dikemas (${total})`); continue; } }
+                        else if (dd + ss !== total) { bad(`Qty_Display + Qty_Stok (${dd + ss}) tidak sama dengan Qty_Dikemas (${total})`); continue; }
+                    } else { dd = dd || 0; ss = ss || 0; total = dd + ss; }
+                    d = dd; s = ss; qty = total;
+                    if (qty <= 0) { bad('Qty 0 — gunakan Status Kosong bila barang tidak ada'); continue; }
+                    let orig = item.original_qty || item.qty_in;
+                    if (qty > orig) { bad(`Melebihi permintaan awal (${orig} pcs)`); continue; }
+                    if (d > 0) { if (!dName) dName = 'Display'; else if (!/display/i.test(dName)) dName = 'Display ' + dName; }
+                    if (s > 0 && !sName) { bad(`Kardus_Stok kosong (Qty_Stok ${s})`); continue; }
+                    if (status === 'Refill') { if (!refRaw) { bad('Refill_Hari kosong'); continue; } ket = `Refill Day ${refRaw}`; } else ket = 'Sesuai';
+                    kardus = pkBangunKardus(dName, d, sName, s);
+                }
+                if (noteRaw) ket += ` (Catatan: ${noteRaw})`;
+
+                let diff = item.qty_in - qty; let m = getMaster(item.code);
+                if (diff !== 0 && m) {
+                    if (!mAvail.has(m._docId)) mAvail.set(m._docId, Number(m.total) || 0);
+                    let av = mAvail.get(m._docId);
+                    if (diff < 0 && av < -diff) { bad(`Stok master tidak cukup (tersisa ${av} pcs)`); continue; }
+                    mAvail.set(m._docId, av + diff);
+                }
+                row.ok = true; row.qty = qty; row.kardus = kardus; row.status = status; row.diff = (m ? diff : 0); row.master = m;
+                row.payload = { status_pengiriman: status === 'Kosong' ? 'Tidak Dikemas' : 'Dikemas', kardus, keterangan_gudang: ket, qty_in: qty };
+                rows.push(row);
+            }
+            pendingPackRows = rows; renderPreviewPacking(kosong);
+        }
+
+        function renderPreviewPacking(kosong) {
+            let okRows = pendingPackRows.filter(r => r.ok), badRows = pendingPackRows.filter(r => !r.ok);
+            let totalQty = okRows.reduce((a, r) => a + r.qty, 0);
+            let box = document.getElementById('packPreview'); box.classList.remove('hidden');
+            let h = `<div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px; font-size:0.85rem; font-weight:600;">
+                <span style="color:var(--success);">✅ Valid: ${okRows.length} barang (${totalQty} pcs)</span>
+                <span style="color:var(--danger);">❌ Dilewati: ${badRows.length} baris</span>
+                ${kosong ? `<span style="color:var(--secondary);">➖ Kolom isian kosong (diabaikan): ${kosong}</span>` : ''}</div>`;
+            if (okRows.length) {
+                h += `<div class="table-responsive" style="max-height:230px; overflow:auto; margin-bottom:12px;"><table><thead><tr><th>Code</th><th>Baju</th><th>Status</th><th style="text-align:center;">Qty</th><th>Kardus</th><th>Stok Master</th></tr></thead><tbody>` +
+                    okRows.map(r => `<tr><td><code>${esc(r.item.code)}</code></td><td>${esc(r.item.product)} ${esc(r.item.variant)}</td><td>${esc(r.status)}</td><td align="center"><strong>${r.qty}</strong>${r.qty !== r.item.qty_in ? `<br><small style="color:var(--warning);">dari ${r.item.qty_in}</small>` : ''}</td><td>${esc(r.kardus)}</td><td>${r.diff > 0 ? `<span style="color:var(--success);">+${r.diff} kembali</span>` : (r.diff < 0 ? `<span style="color:var(--danger);">${r.diff} diambil</span>` : '-')}</td></tr>`).join('') + `</tbody></table></div>`;
+            }
+            if (badRows.length) {
+                h += `<div style="color:var(--danger); font-weight:700; font-size:0.85rem; margin-bottom:6px;">Baris berikut tidak akan disimpan (perbaiki di file lalu upload ulang bila perlu):</div>
+                <div class="table-responsive" style="max-height:200px; overflow:auto;"><table><thead><tr><th>Baris</th><th>Code</th><th>Alasan</th></tr></thead><tbody>` +
+                    badRows.map(r => `<tr><td>${r.line}</td><td>${esc(r.code)}</td><td style="color:var(--danger);">${esc(r.reason)}</td></tr>`).join('') + `</tbody></table></div>`;
+            }
+            if (!okRows.length && !badRows.length) h += `<p class="info-text">Tidak ada baris yang terisi. Isi kolom Status / Kardus pada template lalu upload lagi.</p>`;
+            box.innerHTML = h;
+            let btn = document.getElementById('btnSimpanPack');
+            btn.disabled = okRows.length === 0; btn.innerText = okRows.length ? `Simpan ${okRows.length} Packing (${totalQty} pcs)` : 'Simpan Packing';
+        }
+
+        async function simpanUploadPacking() {
+            let okRows = pendingPackRows.filter(r => r.ok); if (!okRows.length) return;
+            let totalQty = okRows.reduce((a, r) => a + r.qty, 0);
+            let yakin = await UI.confirm('Simpan Packing?', `${okRows.length} barang (total ${totalQty} pcs) akan ditandai Dikemas / Kosong dan stok master disesuaikan bila qty berbeda dari permintaan.`, 'question', 'Ya, Simpan', 'Batal');
+            if (!yakin) return;
+
+            showGlobalLoader(); let saved = 0;
+            try {
+                if (navigator.onLine && window.runTransaction) {
+                    for (let i = 0; i < okRows.length; i += 100) {
+                        let chunk = okRows.slice(i, i + 100);
+                        await runTx(async (tx) => {
+                            let iRefs = chunk.map(g => window.doc(db, 'bazaar_items', g.item._docId));
+                            let mIds = [...new Set(chunk.map(g => g.master && g.master._docId).filter(Boolean))];
+                            let mRefs = mIds.map(id => window.doc(db, 'master_inventory', id));
+                            let iSnaps = await Promise.all(iRefs.map(r => tx.get(r)));
+                            let mSnaps = await Promise.all(mRefs.map(r => tx.get(r)));
+                            let avail = new Map(mIds.map((id, k) => [id, mSnaps[k].exists() ? (Number(mSnaps[k].data().total) || 0) : 0]));
+                            let delta = new Map();
+                            iSnaps.forEach((snap, k) => {
+                                let g = chunk[k];
+                                if (!snap.exists()) throw new Error(`APP:Barang ${g.item.code} sudah dihapus user lain. Upload dibatalkan, silakan ulangi.`);
+                                let cur = snap.data();
+                                if (cur.status !== 'active') throw new Error(`APP:Barang ${g.item.code} sudah diopname. Upload dibatalkan, silakan ulangi.`);
+                                if (PK_SUDAH_TERIMA.includes(cur.status_pengiriman)) throw new Error(`APP:Barang ${g.item.code} baru saja diterima Sales. Upload dibatalkan, silakan ulangi.`);
+                                if (g.qty > (cur.original_qty || cur.qty_in)) throw new Error(`APP:Qty ${g.item.code} melebihi permintaan awal. Upload dibatalkan, silakan ulangi.`);
+                                let diff = cur.qty_in - g.qty;
+                                if (diff !== 0 && g.master) delta.set(g.master._docId, (delta.get(g.master._docId) || 0) + diff);
+                            });
+                            delta.forEach((d, id) => { if (d < 0 && avail.get(id) < -d) throw new Error(`APP:Stok master tidak cukup untuk upload ini (tersisa ${avail.get(id)} pcs, butuh ${-d} pcs). Upload dibatalkan.`); });
+                            iRefs.forEach((r, k) => tx.update(r, chunk[k].payload));
+                            delta.forEach((d, id) => { if (d !== 0) tx.update(mRefs[mIds.indexOf(id)], { total: window.increment(d) }); });
+                        });
+                        chunk.forEach(g => patchLocalItem(g.item._docId, g.payload));
+                        saved += chunk.length;
+                    }
+                } else {
+                    okRows.forEach(g => {
+                        WB.update(window.doc(db, 'bazaar_items', g.item._docId), g.payload);
+                        let diff = g.item.qty_in - g.qty; if (diff !== 0 && g.master) WB.update(window.doc(db, 'master_inventory', g.master._docId), { total: window.increment(diff) });
+                    });
+                    await WB.flush(); okRows.forEach(g => patchLocalItem(g.item._docId, g.payload)); saved = okRows.length;
+                }
+                logActivity('Upload Packing', `Upload packing ${okRows.length} barang (${totalQty} pcs) via CSV untuk bazaar ${document.getElementById('upBazaar').value}`);
+                hideGlobalLoader(); tutupUploadPacking(); renderTablesBazaar();
+                UI.alert('Sukses', `${okRows.length} barang (${totalQty} pcs) berhasil dicatat packing-nya.`, 'success');
+            } catch (e) {
+                await showWriteError(e);
+                if (saved > 0) UI.alert('Sebagian Tersimpan', `${saved} dari ${okRows.length} barang sudah tersimpan sebelum error. Upload ulang file yang sama aman dilakukan (baris yang sudah tersimpan akan sesuai ulang).`, 'warning');
+            }
+        }
+
         async function mintaKardusDisplay(id) {
             let item = getItem(id); if(!item) return;
 
@@ -2744,6 +2992,7 @@
             document.getElementById('btnExportSO')?.classList.remove('hidden');
             document.getElementById('btnUploadJual')?.classList.toggle('hidden', currentUser.departemen !== 'Sales');
             document.getElementById('btnKardusDisplay')?.classList.toggle('hidden', currentUser.departemen !== 'Sales');
+            document.getElementById('btnUploadPacking')?.classList.toggle('hidden', !(currentUser.departemen === 'Gudang' || currentUser.departemen === 'Superadmin'));
             document.getElementById('btnExportSORiwayat')?.classList.remove('hidden');
 
             if(currentUser.departemen === 'Gudang') { 
