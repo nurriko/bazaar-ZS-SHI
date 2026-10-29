@@ -195,6 +195,30 @@
         <p class="info-text">Menghubungkan ke Cloud Database Collections...</p>
     </div>
 
+    <!-- MODAL UPLOAD PENJUALAN (SALES) -->
+    <div id="jualUploadModal" class="modal-overlay">
+        <div class="modal-box" style="text-align:left; max-width:780px; max-height:90vh; overflow-y:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h3 style="margin:0; color:var(--primary);">⬆️ Upload Penjualan (CSV)</h3>
+                <button class="btn-secondary" onclick="tutupUploadPenjualan()" style="padding:4px 8px; font-size:0.75rem; width:auto;">X</button>
+            </div>
+            <p class="info-text" style="margin-bottom:12px;">Gunakan ini jika penjualan tidak sempat dicatat per item. Download template (sudah berisi daftar barang yang sudah Anda terima), isi kolom <b>Qty_Laku</b> (dan <b>Tanggal</b> bila perlu), lalu upload kembali. Baris dengan Qty_Laku kosong akan diabaikan.</p>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+                <button class="btn-primary" style="width:auto; padding:8px 14px; font-size:0.8rem;" onclick="downloadTemplatePenjualan()">⬇️ Download Template</button>
+            </div>
+            <div class="form-group">
+                <label>Tanggal default (dipakai untuk baris yang kolom Tanggal-nya kosong)</label>
+                <select id="jualDefaultDate" onchange="bacaFilePenjualan()"></select>
+            </div>
+            <div class="form-group"><label>Pilih file CSV</label><input type="file" id="fileJual" accept=".csv,text/csv" onchange="bacaFilePenjualan()"></div>
+            <div id="jualPreview" class="hidden"></div>
+            <div class="modal-actions" style="margin-top:15px;">
+                <button class="btn-secondary" onclick="tutupUploadPenjualan()">Batal</button>
+                <button id="btnSimpanJual" class="btn-success" onclick="simpanUploadPenjualan()" disabled>Simpan Penjualan</button>
+            </div>
+        </div>
+    </div>
+
     <!-- UI ALERT & PROMPT MODAL -->
     <div id="sysModal" class="modal-overlay">
         <div class="modal-box">
@@ -580,6 +604,7 @@
                         <h3 id="judulTabelUtama" style="margin: 0;">📊 Stok Berjalan</h3>
                         <div style="display:flex; gap:8px; flex-wrap:wrap;">
                             <button id="btnScanDinamis" class="btn-primary" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="openScanner(currentUser.departemen === 'Sales' ? 'jual' : 'opname')">📷 Scan Aksi Cepat</button>
+                            <button id="btnUploadJual" class="btn-success hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="bukaUploadPenjualan()">⬆️ Upload Penjualan</button>
                             <button id="btnExportPermintaan" class="btn-primary hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="exportExcel('permintaan')">⬇️ Lap. Permintaan</button>
                             <button id="btnExportPenjualan" class="btn-success hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="exportExcel('penjualan')">⬇️ Lap. Penjualan</button>
                             <button id="btnExportSO" class="btn-warning hidden" style="width:auto; padding:6px 12px; font-size:0.75rem;" onclick="exportExcel('sokembali')">⬇️ Lap. SO Kembali</button>
@@ -1931,6 +1956,185 @@
             } catch(e) { showWriteError(e); }
         }
 
+        // ==========================================
+        // UPLOAD PENJUALAN MASSAL (CSV) - khusus Sales
+        // ==========================================
+        let pendingJualRows = [];
+        const JUAL_BLOCKED = ["Menunggu Gudang", "Menunggu Refill Gudang", "Tidak Dikemas", "Dikemas"];
+
+        function jualDateOptions() {
+            let bz = DB.get('bazaars_list').find(b => b.name === activeBazaarName); let dOpt = [];
+            if (bz && bz.start_date && bz.end_date) { let curr = new Date(bz.start_date + "T12:00:00Z"); let end = new Date(bz.end_date + "T12:00:00Z"); while (curr <= end) { dOpt.push(curr.toISOString().split('T')[0]); curr.setUTCDate(curr.getUTCDate() + 1); } }
+            return dOpt;
+        }
+        function jualSisa(i) { let aq = i.qty_revisi_sales !== undefined ? i.qty_revisi_sales : i.qty_in; return aq - (i.qty_sold || 0); }
+        function jualBisaDicatat(i) { return i.status === 'active' && !JUAL_BLOCKED.includes(i.status_pengiriman || "Menunggu Gudang"); }
+
+        // Terima: 2026-11-05, 05/11/2026, 05-11-2026, 5.11.2026, atau angka tanggal Excel (46331)
+        function normalisasiTanggal(v) {
+            v = String(v || '').trim(); if (!v) return '';
+            let y, m, d, mt;
+            if ((mt = v.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/))) { y = +mt[1]; m = +mt[2]; d = +mt[3]; }
+            else if ((mt = v.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})$/))) { d = +mt[1]; m = +mt[2]; y = +mt[3]; }
+            else if (/^\d{5}$/.test(v)) { let dt = new Date(Date.UTC(1899, 11, 30) + (+v) * 86400000); y = dt.getUTCFullYear(); m = dt.getUTCMonth() + 1; d = dt.getUTCDate(); }
+            else return null;
+            let chk = new Date(Date.UTC(y, m - 1, d));
+            if (chk.getUTCFullYear() !== y || chk.getUTCMonth() !== m - 1 || chk.getUTCDate() !== d) return null;
+            return y + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+        }
+
+        function csvCell(v) { v = String(v ?? ''); return /[",;\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+        function unduhCSV(namaFile, csv) {
+            let blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+            let a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = namaFile;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+        }
+
+        function downloadTemplatePenjualan() {
+            let rows = [['Tanggal', 'Code', 'Brand', 'Product', 'Variant', 'Sisa_Stok', 'Qty_Laku']];
+            let items = DB.get('bazaar_items').filter(i => i.bazaar_name === activeBazaarName && jualBisaDicatat(i) && jualSisa(i) > 0);
+            items.sort((a, b) => String(a.brand || '').localeCompare(String(b.brand || '')) || String(a.product || '').localeCompare(String(b.product || '')) || String(a.code || '').localeCompare(String(b.code || '')));
+            if (items.length) items.forEach(i => rows.push(['', i.code, i.brand, i.product, i.variant, jualSisa(i), '']));
+            else rows.push([(jualDateOptions()[0] || new Date().toISOString().split('T')[0]), 'ZS-001', 'Zaskia Sungkar', 'Gamis Flowy', 'Hitam', 5, 2]);
+            unduhCSV('Template_Penjualan_' + String(activeBazaarName || 'Bazaar').replace(/[^\w\-]+/g, '_') + '.csv', rows.map(r => r.map(csvCell).join(',')).join('\r\n'));
+            if (!items.length) UI.alert('Info', 'Belum ada barang yang sudah Anda terima dan masih bersisa, jadi template berisi 1 baris contoh. Terima barang dulu agar daftar barang terisi otomatis.', 'info');
+        }
+
+        function bukaUploadPenjualan() {
+            if (!activeBazaarName) return UI.alert('Pilih Bazaar', 'Pilih bazaar terlebih dahulu.', 'warning');
+            let dOpt = jualDateOptions(); let today = new Date().toISOString().split('T')[0];
+            if (!dOpt.length) dOpt = [today];
+            let sel = document.getElementById('jualDefaultDate');
+            sel.innerHTML = dOpt.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
+            if (dOpt.includes(today)) sel.value = today;
+            document.getElementById('fileJual').value = '';
+            resetPreviewPenjualan();
+            document.getElementById('jualUploadModal').classList.add('active');
+        }
+        function tutupUploadPenjualan() { document.getElementById('jualUploadModal').classList.remove('active'); resetPreviewPenjualan(); document.getElementById('fileJual').value = ''; }
+        function resetPreviewPenjualan() { pendingJualRows = []; document.getElementById('jualPreview').classList.add('hidden'); document.getElementById('jualPreview').innerHTML = ''; document.getElementById('btnSimpanJual').disabled = true; document.getElementById('btnSimpanJual').innerText = 'Simpan Penjualan'; }
+
+        function bacaFilePenjualan() {
+            let fi = document.getElementById('fileJual');
+            if (!fi.files.length) return resetPreviewPenjualan();
+            let reader = new FileReader();
+            reader.onload = (e) => { try { olahCSVPenjualan(String(e.target.result || '')); } catch (err) { console.error(err); resetPreviewPenjualan(); UI.alert('Gagal Membaca', 'File tidak bisa dibaca. Pastikan formatnya CSV sesuai template.', 'error'); } };
+            reader.onerror = () => UI.alert('Gagal Membaca', 'File tidak bisa dibuka.', 'error');
+            reader.readAsText(fi.files[0]);
+        }
+
+        function olahCSVPenjualan(text) {
+            let lines = parseCSV(text.replace(/^\ufeff/, ''));
+            let head = (lines[0] || []).map(h => String(h || '').replace(/^\ufeff/, '').toLowerCase().replace(/[^a-z]/g, ''));
+            let find = (names) => head.findIndex(h => names.includes(h));
+            let cCode = find(['code', 'kode', 'kodebarang']), cQty = find(['qtylaku', 'qty', 'laku', 'jumlahlaku', 'jumlah', 'terjual']), cDate = find(['tanggal', 'tgl', 'date']);
+            if (cCode === -1 || cQty === -1) { resetPreviewPenjualan(); return UI.alert('Format Tidak Sesuai', 'Kolom "Code" dan "Qty_Laku" tidak ditemukan di baris pertama. Silakan download template lalu isi sesuai kolomnya.', 'error'); }
+
+            let defDate = document.getElementById('jualDefaultDate').value;
+            let allowed = jualDateOptions();
+            let byCode = new Map();
+            DB.get('bazaar_items').filter(i => i.bazaar_name === activeBazaarName).forEach(i => {
+                let k = String(i.code || '').trim().toLowerCase(); let cur = byCode.get(k);
+                if (!cur || (i.status === 'active' && cur.status !== 'active')) byCode.set(k, i);
+            });
+            let remaining = new Map(); let rows = []; let kosong = 0;
+
+            for (let r = 1; r < lines.length; r++) {
+                let cols = lines[r] || []; let cell = (idx) => idx === -1 ? '' : String(cols[idx] ?? '').trim();
+                let codeRaw = cell(cCode), qtyRaw = cell(cQty);
+                if (!codeRaw && !qtyRaw) continue;
+                if (codeRaw && !qtyRaw) { kosong++; continue; }
+                let row = { line: r + 1, code: codeRaw, qty: parseInt(qtyRaw), date: '', item: null, ok: false, reason: '' };
+                if (!codeRaw) { row.reason = 'Code kosong'; rows.push(row); continue; }
+                if (isNaN(row.qty) || row.qty <= 0 || String(row.qty) !== qtyRaw.replace(/\.0+$/, '')) { row.reason = `Qty "${qtyRaw}" tidak valid (harus angka bulat > 0)`; rows.push(row); continue; }
+                let dRaw = cell(cDate); let d = dRaw ? normalisasiTanggal(dRaw) : defDate;
+                if (d === null) { row.reason = `Format tanggal "${dRaw}" tidak dikenali (pakai YYYY-MM-DD atau DD/MM/YYYY)`; rows.push(row); continue; }
+                row.date = d;
+                if (allowed.length && !allowed.includes(d)) { row.reason = `Tanggal ${d} di luar periode bazaar`; rows.push(row); continue; }
+                let item = byCode.get(codeRaw.toLowerCase());
+                if (!item) { row.reason = 'Code tidak ada di bazaar ini'; rows.push(row); continue; }
+                row.item = item;
+                if (item.status !== 'active') { row.reason = 'Barang sudah diopname'; rows.push(row); continue; }
+                if (!jualBisaDicatat(item)) { row.reason = 'Barang belum diverifikasi terima'; rows.push(row); continue; }
+                if (!remaining.has(item._docId)) remaining.set(item._docId, jualSisa(item));
+                let sisa = remaining.get(item._docId);
+                if (row.qty > sisa) { row.reason = `Melebihi sisa stok (${sisa} pcs)`; rows.push(row); continue; }
+                remaining.set(item._docId, sisa - row.qty);
+                row.ok = true; rows.push(row);
+            }
+            pendingJualRows = rows;
+            renderPreviewPenjualan(kosong);
+        }
+
+        function renderPreviewPenjualan(kosong) {
+            let okRows = pendingJualRows.filter(r => r.ok), badRows = pendingJualRows.filter(r => !r.ok);
+            let totalQty = okRows.reduce((a, r) => a + r.qty, 0);
+            let box = document.getElementById('jualPreview'); box.classList.remove('hidden');
+            let h = `<div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px; font-size:0.85rem; font-weight:600;">
+                <span style="color:var(--success);">✅ Valid: ${okRows.length} baris (${totalQty} pcs)</span>
+                <span style="color:var(--danger);">❌ Dilewati: ${badRows.length} baris</span>
+                ${kosong ? `<span style="color:var(--secondary);">➖ Qty kosong (diabaikan): ${kosong}</span>` : ''}</div>`;
+            if (okRows.length) {
+                h += `<div class="table-responsive" style="max-height:220px; overflow:auto; margin-bottom:12px;"><table><thead><tr><th>Tanggal</th><th>Code</th><th>Baju</th><th>Variant</th><th>Qty Laku</th></tr></thead><tbody>` +
+                    okRows.map(r => `<tr><td>${esc(r.date)}</td><td><code>${esc(r.item.code)}</code></td><td>${esc(r.item.product)}</td><td>${esc(r.item.variant)}</td><td><strong>${r.qty}</strong></td></tr>`).join('') + `</tbody></table></div>`;
+            }
+            if (badRows.length) {
+                h += `<div style="color:var(--danger); font-weight:700; font-size:0.85rem; margin-bottom:6px;">Baris berikut tidak akan disimpan (perbaiki di file lalu upload ulang bila perlu):</div>
+                <div class="table-responsive" style="max-height:200px; overflow:auto;"><table><thead><tr><th>Baris</th><th>Code</th><th>Qty</th><th>Alasan</th></tr></thead><tbody>` +
+                    badRows.map(r => `<tr><td>${r.line}</td><td>${esc(r.code)}</td><td>${isNaN(r.qty) ? '-' : r.qty}</td><td style="color:var(--danger);">${esc(r.reason)}</td></tr>`).join('') + `</tbody></table></div>`;
+            }
+            if (!okRows.length && !badRows.length) h += `<p class="info-text">Tidak ada baris dengan Qty_Laku yang terisi.</p>`;
+            box.innerHTML = h;
+            let btn = document.getElementById('btnSimpanJual');
+            btn.disabled = okRows.length === 0;
+            btn.innerText = okRows.length ? `Simpan ${okRows.length} Penjualan (${totalQty} pcs)` : 'Simpan Penjualan';
+        }
+
+        async function simpanUploadPenjualan() {
+            let okRows = pendingJualRows.filter(r => r.ok); if (!okRows.length) return;
+            let totalQty = okRows.reduce((a, r) => a + r.qty, 0);
+            let groups = new Map();
+            okRows.forEach(r => { let g = groups.get(r.item._docId); if (!g) { g = { item: r.item, qty: 0, entries: [] }; groups.set(r.item._docId, g); } g.qty += r.qty; g.entries.push({ date: r.date, qty: r.qty, src: 'upload' }); });
+            let list = [...groups.values()];
+
+            let yakin = await UI.confirm('Simpan Penjualan?', `${okRows.length} baris (${list.length} barang, total ${totalQty} pcs) akan dicatat sebagai penjualan.\n\nPastikan penjualan ini belum pernah dicatat per item agar tidak terhitung dobel.`, 'question', 'Ya, Simpan', 'Batal');
+            if (!yakin) return;
+
+            showGlobalLoader(); let saved = 0;
+            try {
+                if (navigator.onLine && window.runTransaction) {
+                    for (let i = 0; i < list.length; i += 150) {
+                        let chunk = list.slice(i, i + 150);
+                        await runTx(async (tx) => {
+                            let refs = chunk.map(g => window.doc(db, 'bazaar_items', g.item._docId));
+                            let snaps = await Promise.all(refs.map(r => tx.get(r)));
+                            snaps.forEach((snap, k) => {
+                                let g = chunk[k];
+                                if (!snap.exists()) throw new Error(`APP:Barang ${g.item.code} sudah dihapus oleh user lain. Upload dibatalkan, silakan cek lalu ulangi.`);
+                                let cur = snap.data();
+                                if (cur.status !== 'active') throw new Error(`APP:Barang ${g.item.code} sudah diopname. Upload dibatalkan, silakan cek lalu ulangi.`);
+                                let aq = cur.qty_revisi_sales !== undefined ? cur.qty_revisi_sales : cur.qty_in;
+                                let sisaNow = aq - (cur.qty_sold || 0);
+                                if (g.qty > sisaNow) throw new Error(`APP:Sisa stok ${g.item.code} sekarang hanya ${sisaNow} pcs (berubah karena penjualan lain). Upload dibatalkan, silakan upload ulang.`);
+                            });
+                            snaps.forEach((snap, k) => { let cur = snap.data(); tx.update(refs[k], { qty_sold: (cur.qty_sold || 0) + chunk[k].qty, sales_history: [...(cur.sales_history || []), ...chunk[k].entries] }); });
+                        });
+                        saved += chunk.length;
+                    }
+                } else {
+                    list.forEach(g => WB.update(window.doc(db, 'bazaar_items', g.item._docId), { qty_sold: window.increment(g.qty), sales_history: [...(g.item.sales_history || []), ...g.entries] }));
+                    await WB.flush(); saved = list.length;
+                }
+                logActivity('Upload Penjualan', `Upload ${okRows.length} baris penjualan (${totalQty} pcs) via CSV untuk bazaar ${activeBazaarName}`);
+                hideGlobalLoader(); tutupUploadPenjualan();
+                UI.alert('Sukses', `${okRows.length} baris penjualan (${totalQty} pcs) berhasil dicatat.`, 'success');
+            } catch (e) {
+                await showWriteError(e);
+                if (saved > 0) UI.alert('Sebagian Tersimpan', `${saved} dari ${list.length} barang sudah tersimpan sebelum error. Cek tab Stok & Verifikasi sebelum upload ulang agar tidak dobel.`, 'warning');
+            }
+        }
+
         async function mintaKardusDisplay(id) {
             let item = getItem(id); if(!item) return;
 
@@ -2306,6 +2510,7 @@
             document.getElementById('btnExportPermintaan')?.classList.remove('hidden');
             document.getElementById('btnExportPenjualan')?.classList.remove('hidden');
             document.getElementById('btnExportSO')?.classList.remove('hidden');
+            document.getElementById('btnUploadJual')?.classList.toggle('hidden', currentUser.departemen !== 'Sales');
             document.getElementById('btnExportSORiwayat')?.classList.remove('hidden');
 
             if(currentUser.departemen === 'Gudang') { 
